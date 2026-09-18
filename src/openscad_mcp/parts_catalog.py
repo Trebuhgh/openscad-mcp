@@ -984,9 +984,14 @@ def _render(
         [binary, "-o", str(out), str(driver)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdin=subprocess.DEVNULL,
         timeout=timeout,
         check=False,
     )
+    # The Windows console launcher can forward diagnostics to stdout.
+    proc.stderr = "\n".join(text for text in (proc.stderr, proc.stdout) if text)
     return out, proc
 
 

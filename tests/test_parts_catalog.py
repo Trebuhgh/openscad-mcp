@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import subprocess
 
 import pytest
 
@@ -580,7 +581,23 @@ class TestSelfCheckGeometry:
     """The model must agree with its own catalog entry, checked in OpenSCAD."""
 
     @pytest.fixture(scope="class")
-    def results(self):
+    def results(self, tmp_path_factory):
+        # Ask OpenSCAD itself: library locations differ between Windows, macOS,
+        # Linux and OPENSCADPATH. Skip only a genuinely missing top-level include.
+        workdir = tmp_path_factory.mktemp("bosl2-probe")
+        source = workdir / "probe.scad"
+        source.write_text("include <BOSL2/std.scad>\ncube(1);\n", encoding="utf-8")
+        probe = subprocess.run(
+            [OPENSCAD, "-o", str(workdir / "probe.csg"), str(source)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+        diagnostics = probe.stdout + probe.stderr
+        if "Can't open include file 'BOSL2/std.scad'" in diagnostics:
+            pytest.skip("BOSL2 not installed in OpenSCAD's library search path")
+        assert probe.returncode == 0 and "ERROR:" not in diagnostics, diagnostics
+        assert (workdir / "probe.csg").is_file(), "OpenSCAD produced no probe output"
         return {part_id: self_check(part_id, openscad=OPENSCAD) for part_id in PART_IDS}
 
     @pytest.mark.parametrize("part_id", PART_IDS)
