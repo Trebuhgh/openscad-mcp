@@ -45,6 +45,13 @@ with mesh probes or sections. Component counts describe connected solids;
 Do not invent connector or mounting positions for real hardware. Request missing
 critical dimensions or use a verified reference drawing.
 
+For adjustable parts, test minimum, nominal, maximum, and interacting parameter
+combinations. `validate(mode="predicates", sweep={variable, values:[...]})` checks
+dimension constraints; `valid` covers the base and all sampled variants. It does not
+validate their meshes: measure and geometry-check representative variants using the
+same `variables`. Check installation paths and tool access for assemblies as well as
+the final pose; clear motion samples alone do not prove continuous clearance.
+
 ## Reading a render
 
 The text digest before the image carries the camera eye/center/up, the projection, the

@@ -29,7 +29,9 @@ parameter edits.
 - `contact`: prove intended static or sliding contact.
 - `alignment`: compare axes or features such as mating holes. Interference and
   clearance alone cannot prove coaxiality.
-- `motion`: sweep a part along a translation or rotation and test the full path.
+- `motion`: sample a part along a translation or rotation. Inspect the sampled
+  positions and any returned certificate; a clear set of samples alone does not
+  prove that the continuous path is collision-free.
 - `rules`: run the assembly's repeatable YAML acceptance suite.
 
 Every result includes tessellation quality. If a distance is within the error bound
@@ -43,6 +45,14 @@ critical openings with sections or probes of the finished geometry.
 Use `measure(mode="probe")` for point-in-solid, ray, visibility, or
 line-of-sight questions. Use `measure(mode="mass")` and mass rules when total mass,
 centre of mass, or inertia is an acceptance criterion.
+
+For enclosures and fastened assemblies, check the installation sequence too. A part
+can fit in its final position yet be impossible to insert. Represent screwdriver
+access, screw insertion, connector plugs, and cable space as named keep-out solids;
+test them against the relevant housing parts. Keep these reference volumes separate
+from printable geometry and exclude them from final exports. Refine motion samples
+near narrow gaps and account for cable bend requirements supplied by the user or
+component documentation.
 
 ## Fits and process compensation
 

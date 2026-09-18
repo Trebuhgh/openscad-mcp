@@ -81,6 +81,11 @@ For OpenSCAD language and geometry failure modes, read
 [references/geometry-and-performance.md](references/geometry-and-performance.md)
 when creating non-trivial geometry or diagnosing a failure.
 
+For adjustable designs, verify the intended parameter range as well as the default
+size. Use the parameter-boundary workflow in that reference: predicate sweeps check
+dimension constraints, then mesh and assembly checks verify representative variants.
+Do not claim a family of parts is verified from a single successful default render.
+
 ## Verification loop
 
 Repeat this loop after every material change:

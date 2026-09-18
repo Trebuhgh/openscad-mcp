@@ -6,7 +6,44 @@ wurden Server und Hilfsmodule, Konfiguration, Cache-Verhalten, Test- und CI-Setu
 Skill-Dateien sowie die zugehörige Dokumentation. Das ist keine Garantie, dass
 jedes mögliche Modell oder jede Plattform fehlerfrei funktioniert.
 
+## Ergänzung: komplexe und variable Bauteile
+
+Die Prüfung von Parameterreihen (`validate(mode="predicates", sweep=...)`) bezieht
+jetzt alle getesteten Varianten in `valid` ein. Bisher konnte der Standardwert
+bestehen und das Gesamtergebnis trotz einer fehlerhaften Variante gültig bleiben.
+OpenSCAD-Fehler einzelner Varianten verhindern ebenfalls ein Bestehen; Fehler und
+Warnungen enthalten den zugehörigen Parameterwert und verweisen auf das Modell.
+
+Der Design-Skill beschreibt jetzt Grenzwertprüfungen, Kombinationen voneinander
+abhängiger Parameter und separate Geometrieprüfungen. Bei Baugruppen berücksichtigt
+er auch Einbauwege sowie Freiräume für Schraubendreher, Stecker und Kabel. Stichproben
+einer Bewegung sind ausdrücklich kein Beweis für einen durchgehend freien Weg.
+
+Das vorhandene Beispiel lässt sich mit
+`uv run python examples/verify_skill_test.py` ausführen. Es prüft zusätzlich, ob um
+die Bohrung mindestens 2 mm Material verbleiben: 5, 10 und 16 mm Bohrungsdurchmesser
+bestehen, 18 mm wird bewusst abgewiesen. Die Mesh- und Renderprüfungen gelten weiter
+für das Standardmodell; die Variantenprüfung bewertet hier nur die Maßbedingungen.
+
+Beispielprompt für deine LLM:
+
+```text
+Verwende openscad-design und prüfe examples/skill_test.scad.
+Teste mit validate(mode="predicates") die Bedingung
+(min(width_x, depth_y) - hole_d) / 2 >= 2
+für hole_d = 5, 10, 16 und 18 mittels sweep.
+Nenne die abgewiesene Variante und den verbleibenden Materialsteg.
+Prüfe anschließend die Variante hole_d=16 separat mit measure und
+validate(mode="geometry"), jeweils mit variables={"hole_d": 16}.
+Rendere diese Variante erst nach bestandenen Geometrieprüfungen.
+```
+
 ## Was verbessert wurde
+
+Die oben beschriebene Ergänzung wurde mit **151 bestandenen Tests und einem
+übersprungenen Test** in den Gruppen Geometrie-Werkzeuge, Baugruppen-Checks und
+Korrekturtests geprüft. Dazu gehören fünf neue Regressionstests. Das ausführbare
+OpenSCAD-Beispiel, Lint (`F,E9,B`) und die Skill-Validierung waren ebenfalls erfolgreich.
 
 | Bereich | Problem | Änderung |
 |---|---|---|
