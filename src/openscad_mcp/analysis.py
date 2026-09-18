@@ -376,7 +376,7 @@ def scan_file(path: Path) -> FileScan:
     if cached is not None:
         return cached
     try:
-        text = path.read_text(errors="replace")
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         text = ""
     scan = scan_text(text, path)
@@ -858,7 +858,7 @@ def make_include_safe_copy(path: str | Path, dest_dir: str | Path) -> ShadowCopy
     )
 
     out = dest / f"{source.stem}__include_safe.scad"
-    out.write_text(text)
+    out.write_text(text, encoding="utf-8")
     return ShadowCopy(
         source=source,
         path=out,
@@ -1068,7 +1068,7 @@ def apply_rewrite(plan: RewritePlan) -> Path:
             "refusing to apply an unsafe rewrite of "
             f"{plan.caller_path}: " + "; ".join(plan.reasons)
         )
-    plan.caller_path.write_text(plan.new_text)
+    plan.caller_path.write_text(plan.new_text, encoding="utf-8")
     return plan.caller_path
 
 

@@ -9,6 +9,7 @@ import asyncio
 import logging
 import logging.handlers
 import os
+import tempfile
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Optional
@@ -220,14 +221,9 @@ class Config(BaseModel):
     @field_validator("temp_dir", mode="before")
     @classmethod
     def set_temp_dir_default(cls, v: Optional[Path]) -> Path:
-        """Set temp_dir default at validation time instead of class definition time.
-
-        Using Path.cwd() in a Field default evaluates once at import time,
-        which can produce incorrect results. This validator defers the call
-        to when the Config instance is actually created.
-        """
+        """Use the host's writable temporary directory at configuration time."""
         if v is None:
-            return Path("/tmp/openscad-mcp")
+            return Path(tempfile.gettempdir()) / "openscad-mcp"
         return Path(v)
 
     @classmethod
@@ -331,8 +327,12 @@ class Config(BaseModel):
         Returns:
             Configured Config instance
         """
-        with open(yaml_file, "r") as f:
+        with open(yaml_file, "r", encoding="utf-8-sig") as f:
             config_dict = yaml.safe_load(f)
+        if config_dict is None:
+            config_dict = {}
+        if not isinstance(config_dict, dict):
+            raise ValueError("Configuration YAML must contain a mapping")
         return cls(**config_dict)
 
     def to_yaml(self, yaml_file: str) -> None:
@@ -342,7 +342,7 @@ class Config(BaseModel):
         Args:
             yaml_file: Path to save YAML configuration
         """
-        with open(yaml_file, "w") as f:
+        with open(yaml_file, "w", encoding="utf-8") as f:
             yaml.dump(
                 self.model_dump(mode="json"),
                 f,
@@ -375,6 +375,7 @@ def setup_logging(logging_config: Optional[LoggingConfig] = None) -> None:
             filename=str(logging_config.file),
             maxBytes=logging_config.max_size_mb * 1024 * 1024,
             backupCount=logging_config.rotate_count,
+            encoding="utf-8",
         )
         file_handler.setLevel(getattr(logging, logging_config.level, logging.INFO))
         formatter = logging.Formatter(
@@ -431,7 +432,7 @@ def get_config() -> Config:
     return _config
 
 
-def set_config(config: Config) -> None:
+def set_config(config: Optional[Config]) -> None:
     """
     Set the global configuration instance.
 

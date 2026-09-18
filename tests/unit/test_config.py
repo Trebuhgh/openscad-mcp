@@ -93,7 +93,7 @@ class TestCacheConfig:
         assert config.enabled is True
         assert config.max_size_mb == 500
         assert config.ttl_hours == 24
-        assert str(config.directory).endswith('.cache/openscad-mcp')
+        assert config.directory == Path.home() / ".cache" / "openscad-mcp"
 
     @pytest.mark.unit
     @pytest.mark.config
@@ -280,7 +280,7 @@ class TestConfig:
 
         assert config.openscad_path is None
         assert config.imagemagick_path is None
-        assert config.temp_dir == Path("/tmp/openscad-mcp")
+        assert config.temp_dir == Path(tempfile.gettempdir()) / "openscad-mcp"
 
         assert isinstance(config.server, ServerConfig)
         assert isinstance(config.rendering, RenderingConfig)
@@ -305,7 +305,7 @@ class TestConfig:
         config = Config.from_env()
 
         assert config.openscad_path == "/usr/bin/openscad"
-        assert str(config.temp_dir) == "/tmp/test-mcp"
+        assert config.temp_dir == Path("/tmp/test-mcp")
         assert config.rendering.max_concurrent == 10
         assert config.rendering.timeout_seconds == 600
         assert config.cache.enabled is True

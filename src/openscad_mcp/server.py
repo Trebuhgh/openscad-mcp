@@ -130,6 +130,8 @@ def _probe_version(path: str) -> Optional[str]:
             [path, "--version"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=15,
             stdin=subprocess.DEVNULL,
@@ -307,6 +309,8 @@ def _run_openscad(
             full_cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=config.rendering.timeout_seconds,
             env=_openscad_env(include_paths),
@@ -658,14 +662,12 @@ def _manifest_is_current(
     """True if every recorded dependency is unchanged and no missing include appeared."""
     for entry in manifest.get("dependencies", []):
         p = Path(entry["path"])
-        fresh = _file_fingerprint(p, with_hash=False)
+        fresh = _file_fingerprint(p, with_hash=True)
         if fresh is None:
             return False
-        if fresh["size"] == entry.get("size") and fresh["mtime_ns"] == entry.get("mtime_ns"):
-            continue
-        # Stat drift: fall back to content comparison
-        fresh = _file_fingerprint(p, with_hash=True)
-        if fresh is None or fresh.get("sha256") != entry.get("sha256"):
+        # Editors and synchronizers can preserve both file length and timestamp.
+        # Only the content hash proves that the dependency is unchanged.
+        if fresh.get("sha256") != entry.get("sha256"):
             return False
 
     # Negative dependencies: includes that could not be opened at render
@@ -983,7 +985,7 @@ def render_scad_to_png(
         inline_path: Optional[str] = None
         if scad_content:
             scad_path = temp_path / "input.scad"
-            scad_path.write_text(scad_content)
+            scad_path.write_text(scad_content, encoding="utf-8")
             inline_path = str(scad_path)
         elif scad_file:
             scad_path = Path(scad_file)
@@ -1036,7 +1038,7 @@ def render_scad_to_png(
         deps: List[str] = []
         if deps_path.exists():
             try:
-                deps = parse_deps_file(deps_path.read_text(errors="replace"))
+                deps = parse_deps_file(deps_path.read_text(encoding="utf-8-sig", errors="replace"))
             except OSError:
                 deps = []
         missing = unresolved_includes(diag)
@@ -1694,7 +1696,7 @@ def _evaluate_scad(
     cleanup: List[Path] = []
     if scad_content:
         tmp_input = temp_dir_path / f"{prefix}_{uuid.uuid4().hex[:8]}.scad"
-        tmp_input.write_text(scad_content)
+        tmp_input.write_text(scad_content, encoding="utf-8")
         scad_input_path = tmp_input
         inline_path = str(tmp_input)
         cleanup.append(tmp_input)
@@ -1721,7 +1723,7 @@ def _evaluate_scad(
         deps: List[str] = []
         if deps_path.exists():
             try:
-                deps = parse_deps_file(deps_path.read_text(errors="replace"))
+                deps = parse_deps_file(deps_path.read_text(encoding="utf-8-sig", errors="replace"))
             except OSError:
                 deps = []
         try:
@@ -2002,7 +2004,7 @@ async def model(
         if action == "get":
             if not file_path.exists():
                 raise FileNotFoundError(f"Model '{name}' not found at {file_path}")
-            text = file_path.read_text()
+            text = file_path.read_text(encoding="utf-8-sig")
             return {
                 "success": True,
                 "name": name,
@@ -2051,7 +2053,7 @@ async def model(
             raise FileNotFoundError(
                 f"Model '{name}' not found at {file_path}; use action='create'"
             )
-        file_path.write_text(content)
+        file_path.write_text(content, encoding="utf-8")
         if ctx:
             await ctx.info(f"{action.title()}d model: {file_path}")
         response = {"success": True, "path": str(file_path), "name": name, "etag": _etag(content)}
@@ -2275,12 +2277,10 @@ async def clear_cache(
     ctx: Optional[Context] = None,
 ) -> Dict[str, Any]:
     """
-    Delete all cached render files and report freed space.
+    Clear render/part files and in-memory measurement/mesh caches.
 
-    Removes every cached image and its dependency manifest from the
-    configured cache directory.
-    Does nothing (and still reports success) when the cache is disabled
-    or the directory does not exist.
+    Also clears existing entries when caching is disabled. File counts and
+    freed_bytes describe disk entries only; missing directories are harmless.
 
     Args:
         ctx: MCP context for logging
@@ -2290,6 +2290,9 @@ async def clear_cache(
     """
     config = get_config()
     cache_dir = config.cache.directory
+
+    _measure_cache.clear()
+    _mesh_cache.clear()
 
     if not cache_dir.exists():
         if ctx:
@@ -2348,7 +2351,7 @@ def _extract_scad_dependencies(file_path: Path) -> List[str]:
         List of dependency path strings as written in the source.
     """
     try:
-        text = file_path.read_text(errors="replace")
+        text = file_path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return []
     return extract_source_dependencies(text)
@@ -2501,7 +2504,7 @@ class _ModelSource:
         if self.scad_content:
             _validate_source_size(self.scad_content)
             self._temp = temp_dir_path / f"{self.prefix}_{uuid.uuid4().hex[:8]}.scad"
-            self._temp.write_text(self.scad_content)
+            self._temp.write_text(self.scad_content, encoding="utf-8")
             self.path = self._temp
             self.text = self.scad_content
             self.wrapper_dir = temp_dir_path
@@ -2518,7 +2521,7 @@ class _ModelSource:
 
             self.model_dir = self.path.parent
             self.text = absolutize_file_refs(
-                self.path.read_text(errors="replace"), self.model_dir
+                self.path.read_text(encoding="utf-8-sig", errors="replace"), self.model_dir
             )
             self.wrapper_dir = temp_dir_path
             self.display_name = self.path.name
@@ -2545,7 +2548,7 @@ class _ModelSource:
         target_dir = self.wrapper_dir or Path(get_config().temp_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / f"wrapper-{self.prefix}-{uuid.uuid4().hex[:8]}.scad"
-        path.write_text(wrapped.text)
+        path.write_text(wrapped.text, encoding="utf-8")
         self._cleanup.append(path)
         return path
 
@@ -2586,11 +2589,11 @@ _MEASURE_CACHE_MAX = 32
 def _static_dependency_fingerprint(
     text: str, base_dir: Path, include_paths: Optional[List[str]], limit: int = 400
 ) -> List[str]:
-    """Stat every file reachable through include/use/import/surface references.
+    """Fingerprint files reachable through include/use/import/surface references.
 
     A static approximation of the ``-d`` closure, good enough to invalidate
     cached measurements when a constants file or library changes. Each entry
-    is ``path|size|mtime_ns``; unresolvable references are skipped.
+    includes its path and SHA-256; unresolvable references are skipped.
     """
     search_roots: List[Path] = [base_dir]
     search_roots.extend(Path(p) for p in (include_paths or []))
@@ -2608,10 +2611,9 @@ def _static_dependency_fingerprint(
                     key = str(cand.resolve())
                     if key in seen:
                         break
-                    st = cand.stat()
-                    seen[key] = f"{key}|{st.st_size}|{st.st_mtime_ns}"
+                    seen[key] = f"{key}|{hashlib.sha256(cand.read_bytes()).hexdigest()}"
                     if cand.suffix.lower() == ".scad":
-                        queue.append((cand.read_text(errors="replace"), cand.parent))
+                        queue.append((cand.read_text(encoding="utf-8-sig", errors="replace"), cand.parent))
                 except OSError:
                     continue
                 break
@@ -2625,8 +2627,8 @@ def _measure_cache_key(source: _ModelSource, variables, include_paths, extra: st
         _hash_field(hasher, source.scad_content.encode())
     else:
         try:
-            st = Path(source.scad_file or "").stat()
-            _hash_field(hasher, f"{source.scad_file}|{st.st_size}|{st.st_mtime_ns}")
+            _hash_field(hasher, str(Path(source.scad_file or "").resolve()))
+            _hash_field(hasher, Path(source.scad_file or "").read_bytes())
         except OSError:
             _hash_field(hasher, str(source.scad_file))
     # Files the model pulls in: a constants file or library edit must miss.
@@ -2711,7 +2713,7 @@ def _measure_source(
     from .wrappers import part_wrapper
 
     key = _measure_cache_key(source, variables, include_paths, extra=part_code or "")
-    cached = _measure_cache.get(key)
+    cached = _measure_cache.get(key) if get_config().cache.enabled else None
     if cached is not None:
         return cached
     if part_code is not None:
@@ -2730,9 +2732,10 @@ def _measure_source(
         stats, diag, _ = _analyze_mesh_export(
             None, source.scad_file, variables, include_paths, "measure", apply_variables=True
         )
-    if len(_measure_cache) >= _MEASURE_CACHE_MAX:
-        _measure_cache.pop(next(iter(_measure_cache)))
-    _measure_cache[key] = (stats, diag)
+    if get_config().cache.enabled:
+        if len(_measure_cache) >= _MEASURE_CACHE_MAX:
+            _measure_cache.pop(next(iter(_measure_cache)))
+        _measure_cache[key] = (stats, diag)
     return stats, diag
 
 
@@ -3753,7 +3756,7 @@ async def validate(
 
         # includes
         with _ModelSource(scad_content, scad_file, "inc") as src:
-            text = src.scad_content if src.scad_content else (src.path or Path()).read_text(errors="replace")
+            text = src.scad_content if src.scad_content else (src.path or Path()).read_text(encoding="utf-8-sig", errors="replace")
             references = extract_source_dependencies(text)
             async with semaphore:
                 ev = await loop.run_in_executor(
@@ -4122,7 +4125,7 @@ def _resolve_check_inputs(
         cf = Path(check_file)
         if not cf.exists():
             raise FileNotFoundError(f"check file not found: {check_file}")
-        asm = load_check_file(cf.read_text(), scad_file=scad_file)
+        asm = load_check_file(cf.read_text(encoding="utf-8-sig"), scad_file=scad_file)
         if asm.scad_file and not Path(asm.scad_file).is_absolute():
             asm.scad_file = str((cf.parent / asm.scad_file).resolve())
         scad_file = scad_file or asm.scad_file
@@ -4204,7 +4207,7 @@ def _csg_dump_sync(
     cached = _parts_cache_dir() / f"{key}.csg"
     if config.cache.enabled and cached.exists():
         try:
-            return cached.read_text(errors="replace")
+            return cached.read_text(encoding="utf-8", errors="replace")
         except OSError:
             pass
     wrapped = build_wrapper(source.text, variables, extra_body=asm.part_body(part))
@@ -4217,10 +4220,10 @@ def _csg_dump_sync(
         )
         if ev.output_path is None:
             return ""
-        text = ev.output_path.read_text(errors="replace")
+        text = ev.output_path.read_text(encoding="utf-8", errors="replace")
         if config.cache.enabled:
             try:
-                cached.write_text(text)
+                cached.write_text(text, encoding="utf-8")
             except OSError:
                 pass
             _evict_cache_if_needed()
@@ -4662,7 +4665,7 @@ async def _measure_extended(
                         None, _evaluate_scad, None, str(wpath), str(out), None, None,
                         src.include_paths_for_wrapper(include_paths), "export", "csg",
                     )
-                    text = ev.output_path.read_text(errors="replace") if ev.output_path else ""
+                    text = ev.output_path.read_text(encoding="utf-8", errors="replace") if ev.output_path else ""
                 finally:
                     if out.exists():
                         out.unlink()

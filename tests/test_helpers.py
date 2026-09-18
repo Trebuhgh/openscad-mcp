@@ -111,9 +111,8 @@ class TestFindOpenscad:
         ]
 
         def patched_exists(self):
-            s = str(self)
-            if s in common_paths:
-                return s == allowed
+            if self in [Path(p) for p in common_paths]:
+                return self == Path(allowed)
             return original_exists(self)
 
         monkeypatch.setattr(Path, "exists", patched_exists)
