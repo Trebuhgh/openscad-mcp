@@ -91,6 +91,11 @@ include = [
     "src/openscad_mcp/parts/*.scad",
     "src/openscad_mcp/parts/README.md",
     "README.md",
+    "README-VERBESSERUNGEN.md",
+    "API.md",
+    "DEPLOYMENT.md",
+    "examples/skill_test.scad",
+    "examples/verify_skill_test.py",
     "AGENTS.md",
     "LICENSE",
     "pyproject.toml",
@@ -127,6 +132,8 @@ artifacts = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
 select = [
     "E",    # pycodestyle errors
     "W",    # pycodestyle warnings
@@ -144,7 +151,7 @@ ignore = [
     "B905",  # zip() without an explicit strict= parameter
 ]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG"]
 
 [tool.black]
