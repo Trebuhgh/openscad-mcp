@@ -4,7 +4,7 @@ Agent brief for the OpenSCAD MCP server. Claude Code should read the richer
 `skills/openscad-design/SKILL.md` instead.
 
 A Model Context Protocol server wrapping the OpenSCAD CLI: it renders `.scad` source
-to images, exports meshes, and returns exact geometric measurements. OpenSCAD must be
+to images, exports meshes, and returns measurements of the tessellated geometry. OpenSCAD must be
 installed on the host. Everything is in millimetres; OpenSCAD itself is unitless.
 
 ## Tools
@@ -31,12 +31,19 @@ installed on the host. Everything is in millimetres; OpenSCAD itself is unitless
 3. Run `validate(mode="syntax")` before anything else. OpenSCAD exits 0 on failed asserts, unknown modules, and missing includes, so the exit code proves nothing.
 4. Run `measure` before trusting any picture. Numbers decide, pictures confirm; a vision model reads broken geometry as fine.
 5. Then `render(grounded=true)` with one to three views. More images make counting and comparison worse, not better.
-6. For assemblies: one module per part, overlap coplanar faces by an epsilon, and take clearances from `reference(topic="fits")` rather than memory. Never union the assembly.
+6. For assemblies: one module per part, overlap primitives within a single printable part by an epsilon where needed, and take clearances from `reference(topic="fits")` rather than memory. Do not add overlaps between distinct assembly parts or union the assembly.
    Then hand the parts to `check` by name: `interference` and `clearance` for fit, `contact` for what should touch, `alignment` for a hole that is off by half a millimetre (interference and clearance both read zero there), `motion` for a sweep, `mass` for weight, centre-of-mass and inertia limits. Every row carries `quality.fn`; a distance inside the tessellation error bound comes back `UNRESOLVED`, so re-run at higher `$fn` rather than believing it. `measure(mode="features")` lists the holes a part cuts, and `reference(topic="parts")` plus `model(action="create", template="part:<id>")` gives you a sourced purchased part with named anchors and a clearance mask instead of guessed dimensions. Freeze the rules in a check file and re-run `check(mode="rules")` after every edit.
 7. Confirm `measure(mode="parts")` reports the component count you designed, and that `validate(mode="geometry")` returns `mesh_health.manifold == true`. A `null` there means the check did not run, not that it passed.
 8. Iterate by changing one variable and re-measuring. Use `scad_eval` to check derived expressions before spending a render.
 9. On every response read `errors`, then `warnings`, then `hints`, then the payload. Check `cached`: a cached result can predate an edit to an included file.
 10. `export_model` last, once the numbers and the manifold check pass.
+
+CSG feature extraction reports cutters before Boolean evaluation, not guaranteed
+holes in the finished mesh. `through: null` is unknown. Confirm critical openings
+with mesh probes or sections. Component counts describe connected solids;
+`measure(mode="parts", parts=[...])` can also measure named parts independently.
+Do not invent connector or mounting positions for real hardware. Request missing
+critical dimensions or use a verified reference drawing.
 
 ## Reading a render
 

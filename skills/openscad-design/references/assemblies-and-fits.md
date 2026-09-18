@@ -35,8 +35,12 @@ parameter edits.
 Every result includes tessellation quality. If a distance is within the error bound
 and returns `UNRESOLVED`, increase quality and rerun; never promote it to a pass.
 
-Use `measure(mode="features")` to inspect holes and their axes, diameters, depths, and
-declared fit. Use `measure(mode="probe")` for point-in-solid, ray, visibility, or
+Use `measure(mode="features")` to inspect subtractive cylinders in the CSG tree,
+including axes, diameters, cutter lengths, and possible fits. These are pre-Boolean
+features, not proof of holes in the finished solid. `through: null` means throughness
+was not determined, and fit candidates do not establish design intent. Confirm
+critical openings with sections or probes of the finished geometry.
+Use `measure(mode="probe")` for point-in-solid, ray, visibility, or
 line-of-sight questions. Use `measure(mode="mass")` and mass rules when total mass,
 centre of mass, or inertia is an acceptance criterion.
 

@@ -15,7 +15,7 @@ use `render` as visual confirmation.
 
 Before writing geometry, extract or state:
 
-- units (use millimetres unless the user explicitly chooses another convention),
+- units (convert supplied dimensions to millimetres for these tools),
 - axis directions, handedness, print-bed face, and origin/datum,
 - manufacturing process, material, nozzle width, and layer height when relevant,
 - required dimensions and tolerances, mating parts, loads, and motion,
@@ -25,6 +25,10 @@ Before writing geometry, extract or state:
 Ask only when a missing value would materially change the geometry or make the result
 unsafe. Otherwise choose a conservative assumption, state it briefly, and keep it as
 a named parameter so the user can change it.
+
+Never invent critical connector positions or mounting coordinates for a real device.
+Obtain a dimensioned reference or ask for the missing dimensions. Checking a housing
+against a guessed reference only proves that the two guesses agree.
 
 For an existing project, inspect its files and dependency graph with
 `get_project_files` before editing. Preserve the project's coordinate system, naming,
@@ -126,9 +130,10 @@ In particular:
 - freeze repeatable acceptance criteria in a YAML check file and run
   `check(mode="rules")` after relevant edits.
 
-`measure(mode="parts")` reports connected mesh components, not semantic part names.
-Use it to detect unintended islands or fusions, but use named part checks to prove
-assembly relationships.
+Mesh component counts describe connected solids, not semantic part names.
+`measure(mode="parts", parts=[...])` also supports independently exported named parts
+in the assembly frame. Use component counts to detect islands or fusions and named
+part checks to prove assembly relationships.
 
 ## Completion gate
 
