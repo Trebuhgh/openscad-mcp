@@ -8,7 +8,6 @@ is installed (skipped otherwise) because the wrappers depend on verified
 ``projection(cut=true)`` exiting 1 on a miss.
 """
 
-import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -17,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from openscad_mcp import server
+from openscad_mcp.diagnostics import parse_openscad_output
 from openscad_mcp.utils.config import CacheConfig, Config, SecurityConfig, set_config
 from openscad_mcp.wrappers import (
     EVAL_MARKER,
@@ -285,6 +285,30 @@ class TestToolsMocked:
 # ---------------------------------------------------------------------------
 
 
+class TestPredicateSweepDiagnostics:
+    async def test_error_invalidates_true_echo_and_reaches_caller(self, project, monkeypatch):
+        def evaluate(*args):
+            stderr = 'ECHO: "__OPENSCAD_MCP_EVAL__", 0, true\n'
+            if args[-1] == "sweep":
+                stderr += 'ERROR: Assertion "wall > 0" failed\n'
+            return server.EvalResult(0, parse_openscad_output(stderr, 0), [], None)
+
+        monkeypatch.setattr(server, "_evaluate_scad", evaluate)
+        out = await validate_fn(
+            scad_file=str(project / "asm.scad"), mode="predicates",
+            predicates=["true"], sweep={"variable": "wall", "values": [0]},
+        )
+        assert out["success"] is True
+        assert out["valid"] is False
+        point = out["sweep"]["points"][0]
+        assert point["results"] == [True]
+        assert point["all_pass"] is False
+        assert point["errors"]
+        assert out["sweep"]["all_pass"] is False
+        assert any("wall=0" in error and "Assertion" in error for error in out["errors"])
+        assert any(hint["code"] == "assertion_failed" for hint in out["hints"])
+
+
 @needs_openscad
 class TestToolsReal:
     async def test_measure_model(self, project):
@@ -404,6 +428,41 @@ class TestToolsReal:
         )
         assert out["valid"] is False
         assert [r["pass"] for r in out["results"]] == [True, True, False]
+
+    @pytest.mark.parametrize(
+        "base, values, expected_valid, expected_points",
+        [
+            (20, [8, 20, 30], False, [False, True, True]),
+            (20, [12, 20, 30], True, [True, True, True]),
+            (8, [12, 20, 30], False, [True, True, True]),
+        ],
+    )
+    async def test_predicate_sweep_validates_base_and_variants(
+        self, project, base, values, expected_valid, expected_points
+    ):
+        out = await validate_fn(
+            scad_file=str(project / "asm.scad"), mode="predicates",
+            variables={"W": base}, predicates=["W > 10", "inner() == W - 2*wall"],
+            sweep={"variable": "W", "values": values},
+        )
+        assert out["success"] is True, out
+        assert out["valid"] is expected_valid
+        assert [p["all_pass"] for p in out["sweep"]["points"]] == expected_points
+        assert out["sweep"]["all_pass"] is all(expected_points)
+        assert out["sweep"]["first_failure"] == (8 if not all(expected_points) else None)
+
+    async def test_predicate_sweep_reports_variant_warning_with_model_location(self, project):
+        out = await validate_fn(
+            scad_file=str(project / "asm.scad"), mode="predicates",
+            predicates=["W == 20 ? true : missing_predicate()"],
+            sweep={"variable": "W", "values": [20, 30]},
+        )
+        assert out["valid"] is False
+        point = out["sweep"]["points"][1]
+        assert point["values"] == [None]
+        assert any("asm.scad" in warning for warning in point["warnings"])
+        assert any("W=30" in warning for warning in out["warnings"])
+        assert not list(project.glob(".openscad-mcp-*"))
 
     async def test_validate_includes(self, project):
         out = await validate_fn(

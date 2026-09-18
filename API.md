@@ -385,15 +385,32 @@ codes `non_manifold`, `open_edges`, `non_manifold_edges`, `multiple_solids`,
              {"predicate": "hole_d < wall", "pass": false, "value": false, "type": "bool"}]}
 ```
 
-With `sweep={"variable": "W", "values": [20, 30, 40, 50]}` it adds:
+With the predicate `W > 30` and
+`sweep={"variable": "W", "values": [20, 30, 40, 50]}` it adds
+(per-point diagnostics omitted here for brevity):
 
 ```json
-{"sweep": {"variable": "W",
+{"sweep": {"variable": "W", "all_pass": false,
   "points": [{"value": 20, "results": [false], "all_pass": false},
-             {"value": 40, "results": [true], "all_pass": true}],
+             {"value": 30, "results": [false], "all_pass": false},
+             {"value": 40, "results": [true], "all_pass": true},
+             {"value": 50, "results": [true], "all_pass": true}],
   "first_failure": 20, "crossing": {"between": [30, 40], "from_pass": false},
   "monotonic": true}}
 ```
+
+The top-level `valid` requires both the base configuration and every sweep point
+to pass without OpenSCAD errors. `sweep.all_pass` describes the sampled variants
+only. Each point includes `errors`, `warnings`, `deprecated`, `echo_output`, and
+repair `hints` when available. Variant diagnostics also appear at the top level,
+with the variable and value prefixed to messages, e.g. `[W=20] ERROR: ...`.
+An error invalidates a point even when its predicate echoes are all `true`.
+`success` indicates tool execution, not acceptance of the design.
+
+Sweeps accept at most 12 values and preserve their input order. `first_failure`,
+`crossing`, and `monotonic` describe that sampled sequence, not an analytic limit.
+No mesh validation is performed: verify important variants separately with
+`measure`, `validate(mode="geometry")`, and assembly checks using the same variables.
 
 **`includes`** resolves every `include`/`use`/`import`/`surface` reference to a
 path and runs the BOSL2 shadowing lint: a module from a `use<>`d file placed by

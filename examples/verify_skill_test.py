@@ -41,6 +41,23 @@ async def main():
             )
         )
         require([r["value"] for r in values["results"]] == [30, 20, 10, 5], "Wrong parameters")
+        # Check a minimum 2 mm ligament, including one deliberately rejected variant.
+        predicates = ["(min(width_x, depth_y) - hole_d) / 2 >= 2"]
+        accepted = checked(
+            await server._tool_fn(server.validate)(
+                mode="predicates", scad_file=str(model), predicates=predicates,
+                sweep={"variable": "hole_d", "values": [5, 10, 16]},
+            )
+        )
+        require(accepted["valid"] and accepted["sweep"]["all_pass"], "Valid range rejected")
+        rejected = checked(
+            await server._tool_fn(server.validate)(
+                mode="predicates", scad_file=str(model), predicates=predicates,
+                sweep={"variable": "hole_d", "values": [5, 16, 18]},
+            )
+        )
+        require(not rejected["valid"], "Unsafe ligament accepted")
+        require(rejected["sweep"]["first_failure"] == 18, "Wrong failing variant")
         measured = checked(
             await server._tool_fn(server.measure)(
                 mode="model", scad_file=str(model), response_format="detailed"
@@ -74,6 +91,11 @@ async def main():
             json.dumps(
                 {
                     "syntax_valid": syntax["valid"],
+                    "parameter_checks": {
+                        "accepted_hole_d_mm": [5, 10, 16],
+                        "rejected_hole_d_mm": rejected["sweep"]["first_failure"],
+                        "min_ligament_mm": 2,
+                    },
                     "dimensions_mm": measured["dimensions"],
                     "volume_mm3": measured["volume"],
                     "manifold": True,

@@ -3626,6 +3626,8 @@ async def validate(
       "predicates": predicates=["W > 10", ...] evaluated in the model's own
         scope; each must be true. sweep={variable, values:[..]} re-runs
         them per value and reports the first failure and the crossing.
+        valid requires the base and every sampled value to pass without errors;
+        sweep points include diagnostics. This does not validate meshes.
       "includes": every include/use/import/surface reference with its
         resolved path, plus the BOSL2 lint: a module from a use<>d file
         placed by attach()/position() is silently put at CENTER; findings
@@ -3752,6 +3754,14 @@ async def validate(
                 response["sweep"] = await _predicate_sweep(
                     scad_content, scad_file, parsed_vars, include_paths, exprs, sweep
                 )
+                response["valid"] = response["valid"] and response["sweep"]["all_pass"]
+                for point in response["sweep"]["points"]:
+                    label = f"{response['sweep']['variable']}={point['value']!r}"
+                    for field in ("errors", "warnings", "deprecated"):
+                        response[field].extend(f"[{label}] {msg}" for msg in point[field])
+                    for hint in point.get("hints", []):
+                        if hint not in response.setdefault("hints", []):
+                            response["hints"].append(hint)
             return response
 
         # includes
@@ -4811,7 +4821,7 @@ async def _predicate_sweep(
     include_paths: Optional[List[str]], exprs: List[str], sweep: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Re-evaluate predicates across values of one variable; report the crossing."""
-    from .wrappers import build_wrapper, collect_eval_results
+    from .wrappers import collect_eval_results, eval_wrapper
 
     variable = str(sweep.get("variable") or "")
     values = list(sweep.get("values") or [])
@@ -4828,21 +4838,24 @@ async def _predicate_sweep(
         vars_ = dict(parsed_vars)
         vars_[variable] = value
         with _ModelSource(scad_content, scad_file, "sweep") as src:
-            wrapped = build_wrapper(src.text, vars_, extra_body="\n".join(
-                f'echo("__OPENSCAD_MCP_EVAL__", {i}, ({e}));' for i, e in enumerate(exprs)
-            ))
+            wrapped = eval_wrapper(src.text, [str(e) for e in exprs], vars_)
             wpath = src.wrapper_file(wrapped)
             async with semaphore:
                 ev = await loop.run_in_executor(
                     None, _evaluate_scad, None, str(wpath), null_output, "csg", None,
                     src.include_paths_for_wrapper(include_paths), "validation", "sweep",
                 )
+            _rebase_diagnostics(ev.diagnostics, wpath, wrapped, src.display_name)
         res = collect_eval_results(ev.diagnostics.echo_output, len(exprs))
         return {
             "value": value,
             "results": [bool(r.get("evaluated") and r.get("value") is True) for r in res],
             "values": [r.get("value") for r in res],
-            "all_pass": all(r.get("evaluated") and r.get("value") is True for r in res),
+            "all_pass": (
+                all(r.get("evaluated") and r.get("value") is True for r in res)
+                and not ev.diagnostics.errors
+            ),
+            **ev.diagnostics.to_dict(include_records=False),
         }
 
     points = await asyncio.gather(*[_point(v) for v in values])
@@ -4856,6 +4869,7 @@ async def _predicate_sweep(
             break
     return {
         "variable": variable,
+        "all_pass": all(passes),
         "points": points,
         "first_failure": None if first_failure is None else first_failure["value"],
         "crossing": crossing,
