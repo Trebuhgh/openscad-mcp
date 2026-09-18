@@ -130,6 +130,9 @@ project. Restart the client after editing; it holds the server open.
 
 ## Configuration
 
+Text inputs (SCAD, check files and configuration YAML) use UTF-8. UTF-8 BOMs
+are accepted when reading model and YAML files; generated source and logs are UTF-8.
+
 Every setting has an environment variable and a YAML key.
 [.env.example](.env.example) is the annotated list of variables with their
 defaults; a `.env` file in the working directory is loaded automatically. The
@@ -146,7 +149,7 @@ settings that matter most in a deployment:
 | `MCP_MAX_FILE_SIZE_MB` | 10 | Largest inline `scad_content` accepted |
 | `MCP_HARD_WARNINGS` | false | Restores `--hardwarnings`; see the README for why it is off |
 | `MCP_CACHE_ENABLED` / `_SIZE_MB` / `_TTL_HOURS` | true / 500 / 24 | Render cache |
-| `MCP_TEMP_DIR` | `/tmp/openscad-mcp` | Scratch directory |
+| `MCP_TEMP_DIR` | `<system temp>/openscad-mcp` | Scratch directory; uses Python's `tempfile.gettempdir()` on each host |
 | `MCP_TRANSPORT` / `MCP_HOST` / `MCP_PORT` | stdio / localhost / 8000 | Transport |
 | `MCP_LOG_LEVEL` / `MCP_LOG_FILE` | INFO / none | Logging; the file handler rotates |
 
@@ -262,18 +265,22 @@ dependency manifests at the top level, per-part meshes and CSG dumps in
 `parts/`. Keys cover everything that went into the call, so an ordinary edit
 invalidates the entry.
 
-`MCP_CACHE_SIZE_MB` (500) and `MCP_CACHE_TTL_HOURS` (24) bound the render
-entries only; eviction deletes the oldest files by modification time until the
-total is back under the cap. The `parts/` meshes are neither counted nor
-evicted, so watch the directory on a busy host:
+`MCP_CACHE_SIZE_MB` (500) covers render files and the `parts/` STL, JSON and
+CSG files. Eviction removes the oldest entries as groups, keeping meshes and
+their manifests together. `MCP_CACHE_TTL_HOURS` (24) applies to render lookups;
+part entries are bounded by size rather than TTL. Inspect disk usage with:
 
 ```bash
 du -sh ~/.cache/openscad-mcp ~/.cache/openscad-mcp/parts
 ```
 
-The `clear_cache` tool removes both. Deleting the directory by hand is safe;
-it is rebuilt on the next call. `MCP_TEMP_DIR` holds scratch files for inline
-models and should be on fast local disk.
+The `clear_cache` tool removes both disk caches and clears in-memory measurements
+and mesh acceleration data, including when caching has been disabled or the cache
+directory is absent. Deleting disk files alone does not clear process memory.
+Dependency hashes detect content edits even when file size and timestamps remain
+unchanged. Static dependency scans for measurements/parts cannot resolve every
+computed filename; clear caches explicitly after changing such inputs.
+`MCP_TEMP_DIR` holds scratch files for inline models and should be on fast local disk.
 
 ## Upgrading
 

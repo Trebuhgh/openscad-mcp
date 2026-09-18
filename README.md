@@ -13,6 +13,9 @@ and clearance, extract holes and features, judge printability, and export. Built
 [FastMCP](https://gofastmcp.com) for Python; OpenSCAD 2021.01 is the supported floor
 and dev snapshots are used when present.
 
+For the project review, fixes, and a runnable verification example, see
+[Verbesserungen und Beispiel (Deutsch)](README-VERBESSERUNGEN.md).
+
 ## Prerequisites
 
 - **[OpenSCAD](https://openscad.org/downloads.html)** installed on your system
@@ -171,6 +174,19 @@ The server also publishes MCP resources (`openscad://conventions`,
 instructions with the coordinate and assembly conventions it expects. A
 Claude Code skill lives in `skills/openscad-design/SKILL.md` and the repo can
 be installed as a Claude Code plugin (`.claude-plugin/`).
+
+The MCP connection exposes tools; it does not automatically install the design
+skill in every client. Register or copy the **whole** `skills/openscad-design`
+directory, including `references/`, using your client's skill mechanism. In the
+OpenCode setup tested here, its project location is
+`.opencode/skills/openscad-design/`. Keep that copy synchronized with this checkout.
+For clients without skill loading, attach the main skill and the relevant references.
+Confirm loading in the tool log, rather than relying only on the assistant saying yes.
+
+A small end-to-end example is [examples/skill_test.scad](examples/skill_test.scad).
+With OpenSCAD installed, run `uv run python examples/verify_skill_test.py` to validate,
+evaluate, measure and render it through the server functions without a chat client.
+This checks the server pipeline; actual skill loading must be checked in your client.
 
 ### Tool Parameters
 

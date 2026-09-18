@@ -628,7 +628,8 @@ check ran, not whether OpenSCAD was found.
 ### clear_cache
 
 No parameters. Deletes cached PNGs, their dependency manifests, and the cached
-per-part STL/CSG meshes.
+per-part STL/CSG meshes. Also clears in-memory measurements and mesh acceleration
+data, even when the disk directory is absent or caching is disabled.
 
 ```json
 {"success": true, "cleared_files": 62, "freed_bytes": 5720040}
@@ -819,7 +820,7 @@ from a `.env` file.
 |---|---|---|---|
 | `OPENSCAD_PATH` | `openscad_path` | auto-detected | OpenSCAD binary |
 | `IMAGEMAGICK_PATH` | `imagemagick_path` | null | ImageMagick convert |
-| `MCP_TEMP_DIR` | `temp_dir` | `/tmp/openscad-mcp` | scratch directory |
+| `MCP_TEMP_DIR` | `temp_dir` | `<system temp>/openscad-mcp` | scratch directory from `tempfile.gettempdir()` |
 | `MCP_TRANSPORT` | `server.transport` | `stdio` | `stdio`, `http`, `sse` |
 | `MCP_HOST` | `server.host` | `localhost` | HTTP/SSE bind host |
 | `MCP_PORT` | `server.port` | `8000` | HTTP/SSE port, 1024-65535 |
