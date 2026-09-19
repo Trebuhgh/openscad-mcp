@@ -38,6 +38,39 @@ validate(mode="geometry"), jeweils mit variables={"hole_d": 16}.
 Rendere diese Variante erst nach bestandenen Geometrieprüfungen.
 ```
 
+## Ergänzung aus Teil 7: lokale Auflösung und Alignment-Berichte
+
+Die Baugruppenprüfung berechnet die radiale Polygonabweichung jetzt aus Radius
+und tatsächlicher Segmentzahl jedes extrahierten CSG-Zylindermerkmals. Lokale
+`$fn`-Werte sowie die durch `$fa`/`$fs` bestimmten Segmentzahlen werden dabei
+berücksichtigt. Auch bei gemischten Auflösungen zählt die größte berechnete
+Abweichung, nicht automatisch der größte Radius.
+
+Beispiel: Ein Boss mit Radius 3,5 mm und lokalem `$fn=48` liefert ungefähr
+`error_bound_mm=0.0075` statt der zuvor aus Standardwerten geschätzten `0.1418`.
+`quality.fn` bleibt ohne globalen Override `null`; `quality.segments` nennt die
+tatsächlich gefundenen Segmentzahlen. Quelle und Geltungsbereich der Fehlergrenze
+werden ebenfalls ausgegeben. Sie beschreibt die extrahierten Zylindermerkmale,
+keine allgemeine Fehlergarantie für beliebige Freiformflächen oder Druckprozesse.
+Ein globaler Quality-Override allein erhöht keine explizit lokal gesetzte Auflösung.
+
+Alignment-Fehler enthalten jetzt `features` mit Teilname, Polarität, Durchmesser
+und Eintritts-/Austrittsposition sowie eine lesbare `reading`. Acht Findings bei
+vier verschobenen Achsen bleiben möglich: Pro Achse können sowohl Boss als auch
+Pilotbohrung gegen die Deckelbohrung geprüft werden. Die Meldungen sind nun
+unterscheidbar.
+
+Beispielprompt:
+
+```text
+Wiederhole Teil 7 mit dem neu gestarteten OpenSCAD-MCP-Server.
+Berichte quality.fn, quality.segments, error_bound_mm und error_bound_source.
+Beim Gehäuse mit curve_fn=48 erwarte ich segments=[48] und ungefähr 0.0075 mm.
+Erkläre beim verschobenen Alignment anhand von features und reading,
+welche Meldungen Bosse und welche Pilotbohrungen betreffen.
+Ändere keine Modelldatei und erzeuge keinen finalen Export.
+```
+
 ## Was verbessert wurde
 
 Die oben beschriebene Ergänzung wurde mit **151 bestandenen Tests und einem

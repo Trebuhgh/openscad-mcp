@@ -4189,17 +4189,20 @@ def _fn_of(all_vars: Dict[str, Any]) -> Optional[int]:
         return None
 
 
-def _curved_radius(features_by_part: Dict[str, Any], names: Sequence[str]) -> Optional[float]:
-    best: Optional[float] = None
+def _quality_from_features(features_by_part: Dict[str, Any], names: Sequence[str], fn: Optional[int]):
+    from .checks import Quality
+
+    samples = []
     for n in names:
         fs = features_by_part.get(n)
         if not fs:
             continue
         for f in getattr(fs, "features", []):
             r = float(getattr(f, "nominal_d_mm", 0.0)) / 2.0
-            if r > 0 and (best is None or r > best):
-                best = r
-    return best
+            segments = int(f.segments)
+            if r > 0 and segments >= 3:
+                samples.append((r, segments))
+    return Quality(fn=fn, curve_samples=tuple(samples))
 
 
 def _csg_dump_sync(
@@ -4315,7 +4318,7 @@ async def check(
     OpenSCAD's intersection volume.
     """
     from .assembly import apply_expression_values, collect_expression_slots
-    from .checks import Quality, RuleEngine, exit_code, summarize
+    from .checks import RuleEngine, exit_code, summarize
 
     t0 = time.time()
     mode = (mode or "interference").lower()
@@ -4363,7 +4366,7 @@ async def check(
                     logger.warning("feature extraction failed: %s", exc)
                 timings["features_s"] = round(time.time() - t1, 3)
 
-            qual = Quality(fn=_fn_of(all_vars), curved_radius_mm=_curved_radius(features_by_part, list(meshes)))
+            qual = _quality_from_features(features_by_part, list(meshes), _fn_of(all_vars))
 
             loop = asyncio.get_running_loop()
 

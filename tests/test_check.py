@@ -7,8 +7,8 @@ full-turn certificate, predicates, probes, rays, check files, and the CLI.
 """
 
 import json
+import math
 import shutil
-from pathlib import Path
 
 import pytest
 
@@ -58,6 +58,14 @@ def project(tmp_path):
 
 
 class TestQualityAndSummary:
+    def test_mixed_segment_counts_use_worst_actual_curve(self):
+        # The smaller but coarser cylinder dominates; neither max radius nor
+        # max segment count alone is enough to compute the bound.
+        q = Quality(fn=128, curve_samples=((10.0, 96), (3.5, 12)))
+        assert q.error_bound_mm() == pytest.approx(3.5 * (1 - math.cos(math.pi / 12)))
+        assert q.to_dict()["segments"] == [12, 96]
+        assert q.to_dict()["fn"] == 128
+
     def test_quality_bound(self):
         q = Quality(fn=24, curved_radius_mm=16.0)
         d = q.to_dict()
@@ -225,6 +233,50 @@ class TestCheckReal:
 
 @needs_openscad
 class TestReviewFixes:
+    @pytest.mark.parametrize("local_fn,override", [(48, None), (48, 128), (12, 128)])
+    async def test_clearance_uses_actual_local_segments(self, project, local_fn, override):
+        model = project / "local_quality.scad"
+        model.write_text(
+            f"module a() {{ cylinder(r=3.5, h=5, $fn={local_fn}); }}\n"
+            "module b() { translate([7.02,0,0]) a(); }\n",
+            encoding="utf-8",
+        )
+        result = await check_fn(
+            scad_file=str(model), mode="clearance", parts=PARTS[:2],
+            min_mm=0.01, quality=override,
+        )
+        assert result["success"] is True
+        assert result["quality"]["fn"] == override
+        assert result["quality"]["segments"] == [local_fn]
+        expected = round(3.5 * (1 - math.cos(math.pi / local_fn)), 4)
+        assert result["quality"]["error_bound_mm"] == expected
+        assert result["findings"][0]["status"] == ("PASS" if local_fn == 48 else "UNRESOLVED")
+
+    async def test_alignment_identifies_boss_and_bore_findings(self, project):
+        model = project / "alignment_detail.scad"
+        model.write_text(
+            "module a() { difference() { cylinder(d=7,h=10,$fn=48); "
+            "translate([0,0,-0.01]) cylinder(d=2.65,h=10.02,$fn=48); } }\n"
+            "module b() { difference() { translate([-5,-5,0]) cube([10,10,2]); "
+            "translate([0,0,-0.01]) cylinder(d=3.55,h=2.02,$fn=48); } }\n",
+            encoding="utf-8",
+        )
+        result = await check_fn(
+            scad_file=str(model), mode="alignment", tolerance_mm=0.05,
+            parts=[PARTS[0], {"name": "b", "code": "b();", "place": "translate([0.3,0,10.5])"}],
+        )
+        assert result["exit_code"] == 1
+        rows = result["findings"]
+        assert len(rows) == 2
+        assert {r["features"][0]["polarity"] for r in rows} == {"additive", "subtractive"}
+        assert {r["features"][0]["d"] for r in rows} == {7.0, 2.65}
+        assert len({r["reading"] for r in rows}) == 2
+        for row in rows:
+            assert row["status"] == "FAIL"
+            assert row["magnitude"]["offset_mm"] == pytest.approx(0.3)
+            assert row["features"][1]["d"] == 3.55
+            assert "entry" in row["features"][0]
+
     async def test_rays_ignore_ghost_parts(self, project):
         parts = [PARTS[0], {"name": "c", "code": "c();", "ghost": True}]
         r = await check_fn(

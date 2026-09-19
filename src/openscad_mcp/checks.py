@@ -12,10 +12,10 @@ server exported separately (never unioned). Interference/contact/clearance
 are one classification ladder; a coincident-face pair is *contact*, never
 interference, and never decided by an OpenSCAD intersection volume.
 
-Quality provenance: every geometric row carries the tessellation ``fn`` and,
-when the caller supplies the largest curved radius of the parts involved,
-the inscribed-polygon error bound. A distance smaller than that bound is
-reported as UNRESOLVED rather than as a number.
+Quality provenance records the global ``fn`` override separately from the
+evaluated segment counts of extracted cylindrical features. Their maximum radial
+polygon deviation supplies the bound used by the clearance rule. This is not a
+general error bound for arbitrary geometry or a manufacturing tolerance.
 """
 
 from __future__ import annotations
@@ -40,17 +40,28 @@ def _v3(seq: Any) -> Vec3:
 class Quality:
     fn: Optional[int]
     curved_radius_mm: Optional[float] = None  # largest curved feature radius among the parts
+    # Evaluated CSG radii and segment counts, including local overrides and scaling.
+    curve_samples: Tuple[Tuple[float, int], ...] = ()
 
     def error_bound_mm(self) -> Optional[float]:
+        if self.curve_samples:
+            return max(geom.inscribed_polygon_error(r, n) for r, n in self.curve_samples)
         if self.curved_radius_mm is None:
             return None
         segs = geom.segments_for(self.curved_radius_mm, self.fn or 0)
         return geom.inscribed_polygon_error(self.curved_radius_mm, segs)
 
     def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {"fn": self.fn, "curved_features": self.curved_radius_mm is not None}
+        d: Dict[str, Any] = {
+            "fn": self.fn,
+            "curved_features": bool(self.curve_samples) or self.curved_radius_mm is not None,
+        }
         if self.fn is None:
             d["note"] = "no $fn override; the model's own $fn/$fa/$fs apply"
+        if self.curve_samples:
+            d["segments"] = sorted({n for _, n in self.curve_samples})
+            d["error_bound_source"] = "evaluated_csg_cylinders"
+            d["error_bound_scope"] = "maximum radial deviation of extracted cylindrical features"
         bound = self.error_bound_mm()
         if bound is not None:
             d["error_bound_mm"] = round(bound, 4)
@@ -522,7 +533,11 @@ class RuleEngine:
                     "subject": [mis["a"].get("part"), mis["b"].get("part")],
                     "status": "FAIL" if mis["offset_mm"] > tol else "PASS",
                     "magnitude": {"offset_mm": round(mis["offset_mm"], 4)},
-                    "reading": mis.get("reading"),
+                    "features": [mis["a"], mis["b"]],
+                    "reading": (
+                        f"{mis['a']['part']} {mis['a']['polarity']} D{mis['a']['d']:g} / "
+                        f"{mis['b']['part']} {mis['b']['polarity']} D{mis['b']['d']:g}"
+                    ),
                     "tier": "python",
                     "why": rule.get("why", "holes must be coaxial"),
                 }
