@@ -1,13 +1,18 @@
 """OpenSCAD executable discovery and version-dependent capabilities."""
 
+import logging
 import os
 import platform
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from .diagnostics import parse_openscad_output
 from .utils.config import get_config
+
+logger = logging.getLogger(__name__)
 
 OPENSCAD_NAMES = ["openscad-nightly", "openscad", "OpenSCAD", "openscad.exe"]
 
@@ -29,6 +34,7 @@ OPENSCAD_COMMON_PATHS = [
 _VERSION_RE = re.compile(r"OpenSCAD version (\S+)")
 _openscad_cache: dict[str, str | None] = {}
 _capability_cache: dict[str, dict[str, Any]] = {}
+_memory_limit_checked: dict[str, bool] = {}
 
 
 def reset_openscad_cache() -> None:
@@ -166,3 +172,114 @@ def library_search_paths() -> list[Path]:
                 if path not in search_paths:
                     search_paths.append(path)
     return search_paths
+
+
+def wrap_with_memory_limit(cmd: list[str]) -> list[str]:
+    """Prefix a POSIX command with an address-space limit when configured."""
+    limit_mb = get_config().security.max_memory_mb
+    if limit_mb <= 0 or os.name != "posix":
+        return cmd
+    shell = shutil.which("sh")
+    if not shell:
+        return cmd
+
+    limit_kb = int(limit_mb) * 1024
+    key = str(limit_kb)
+    if key not in _memory_limit_checked:
+        try:
+            probe = subprocess.run(
+                [shell, "-c", f"ulimit -v {limit_kb}"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            _memory_limit_checked[key] = probe.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            _memory_limit_checked[key] = False
+        if not _memory_limit_checked[key]:
+            logger.warning(
+                "Could not apply memory limit of %d MB to OpenSCAD subprocesses "
+                "(ulimit -v unsupported here); running without a ceiling",
+                limit_mb,
+            )
+    if not _memory_limit_checked[key]:
+        return cmd
+    return [
+        shell,
+        "-c",
+        f'ulimit -v {limit_kb} 2>/dev/null; exec "$@"',
+        "openscad-mcp",
+        *cmd,
+    ]
+
+
+def openscad_env(include_paths: list[str] | None = None) -> dict[str, str] | None:
+    """Build a subprocess environment containing caller include paths."""
+    if not include_paths:
+        return None
+    env = os.environ.copy()
+    paths = [str(path) for path in include_paths]
+    existing = env.get("OPENSCADPATH", "")
+    if existing:
+        paths.append(existing)
+    env["OPENSCADPATH"] = os.pathsep.join(paths)
+    return env
+
+
+def run_openscad(
+    cmd: list[str],
+    include_paths: list[str] | None = None,
+    label: str = "rendering",
+) -> subprocess.CompletedProcess:
+    """Run OpenSCAD with configured timeout, memory, and include-path limits."""
+    config = get_config()
+    full_cmd = wrap_with_memory_limit(cmd)
+    try:
+        return subprocess.run(
+            full_cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=config.rendering.timeout_seconds,
+            env=openscad_env(include_paths),
+            stdin=subprocess.DEVNULL,
+            start_new_session=(os.name == "posix"),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raw_partial = exc.stderr
+        if isinstance(raw_partial, bytes):
+            partial = raw_partial.decode("utf-8", errors="replace")
+        elif isinstance(raw_partial, str):
+            partial = raw_partial
+        else:
+            partial = ""
+        tail = ""
+        if partial:
+            diagnostics = parse_openscad_output(partial, None)
+            lines = diagnostics.errors + diagnostics.warnings
+            if not lines:
+                lines = [line for line in partial.splitlines() if line.strip()][-5:]
+            if lines:
+                tail = " Output before timeout: " + " | ".join(lines[-5:])
+        raise RuntimeError(
+            f"OpenSCAD {label} timed out after {config.rendering.timeout_seconds} seconds.{tail}"
+        ) from exc
+
+
+def format_variables(variables: dict[str, Any] | None) -> list[str]:
+    """Turn a variables mapping into OpenSCAD ``-D name=value`` arguments."""
+    args: list[str] = []
+    if not variables:
+        return args
+    for key, value in variables.items():
+        if isinstance(value, str):
+            rendered = f'"{value}"'
+        elif isinstance(value, bool):
+            rendered = "true" if value else "false"
+        else:
+            rendered = str(value)
+        args.extend(["-D", f"{key}={rendered}"])
+    return args

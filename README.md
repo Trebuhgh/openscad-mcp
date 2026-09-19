@@ -372,7 +372,7 @@ openscad-mcp/
 │   ├── parameters.py        # Flexible MCP parameter normalization
 │   ├── responses.py         # Image response sizing, compression and file output
 │   ├── render_cache.py      # Dependency-aware render and parts cache
-│   ├── runtime.py           # OpenSCAD discovery, versions and capabilities
+│   ├── runtime.py           # OpenSCAD discovery, capabilities and process execution
 │   └── utils/config.py      # Configuration with env/YAML/dotenv support
 ├── tests/                   # ~1,500 tests; 80% coverage floor
 ├── evals/                   # Deterministic geometry eval harness, 15 tasks

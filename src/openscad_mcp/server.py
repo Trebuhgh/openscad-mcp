@@ -8,12 +8,11 @@ import contextlib
 import hashlib
 import json
 import logging
-import os
 import platform
 import re
 import shutil
 import struct
-import subprocess
+import subprocess  # noqa: F401 - retained for existing patch targets
 import tempfile
 import time
 import uuid
@@ -83,14 +82,22 @@ from .runtime import (
     get_openscad_capabilities,
 )
 from .runtime import (
+    format_variables as _format_variables,
+)
+from .runtime import (
     library_search_paths as _library_search_paths,
 )
+from .runtime import openscad_env as _runtime_openscad_env
 from .runtime import (
     reset_openscad_cache as _runtime_reset_openscad_cache,
 )
 from .runtime import (
+    run_openscad as _run_openscad,
+)
+from .runtime import (
     version_tuple as _version_tuple,
 )
+from .runtime import wrap_with_memory_limit as _runtime_wrap_with_memory_limit
 from .utils.config import get_config, get_render_semaphore
 
 logger = logging.getLogger(__name__)
@@ -135,6 +142,16 @@ def _reset_openscad_cache() -> None:
     _runtime_reset_openscad_cache()
 
 
+def _wrap_with_memory_limit(cmd: list[str]) -> list[str]:
+    """Compatibility wrapper for the runtime process limiter."""
+    return _runtime_wrap_with_memory_limit(cmd)
+
+
+def _openscad_env(include_paths: list[str] | None = None) -> dict[str, str] | None:
+    """Compatibility wrapper for OpenSCAD include-path environments."""
+    return _runtime_openscad_env(include_paths)
+
+
 # ============================================================================
 # OpenSCAD binary discovery and capabilities
 # ============================================================================
@@ -142,135 +159,6 @@ def _reset_openscad_cache() -> None:
 # ============================================================================
 # Subprocess execution
 # ============================================================================
-
-_memory_limit_checked: dict[str, bool] = {}
-
-
-def _wrap_with_memory_limit(cmd: list[str]) -> list[str]:
-    """Prefix *cmd* with a POSIX shell that applies RLIMIT_AS, then execs.
-
-    ``preexec_fn`` is avoided deliberately: this is a multi-threaded async
-    server and running Python between fork and exec is a documented
-    segfault source. ``exec`` replaces the shell, so the direct child that
-    ``subprocess`` kills on timeout is OpenSCAD itself.
-    """
-    config = get_config()
-    limit_mb = config.security.max_memory_mb
-    if limit_mb <= 0 or os.name != "posix":
-        return cmd
-    sh = shutil.which("sh")
-    if not sh:
-        return cmd
-    limit_kb = int(limit_mb) * 1024
-    key = str(limit_kb)
-    if key not in _memory_limit_checked:
-        try:
-            probe = subprocess.run(
-                [sh, "-c", f"ulimit -v {limit_kb}"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=10,
-            )
-            _memory_limit_checked[key] = probe.returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            _memory_limit_checked[key] = False
-        if not _memory_limit_checked[key]:
-            logger.warning(
-                "Could not apply memory limit of %d MB to OpenSCAD subprocesses "
-                "(ulimit -v unsupported here); running without a ceiling",
-                limit_mb,
-            )
-    if not _memory_limit_checked[key]:
-        return cmd
-    return [sh, "-c", f'ulimit -v {limit_kb} 2>/dev/null; exec "$@"', "openscad-mcp", *cmd]
-
-
-def _run_openscad(
-    cmd: list[str],
-    include_paths: list[str] | None = None,
-    label: str = "rendering",
-) -> subprocess.CompletedProcess:
-    """Run one OpenSCAD command with the configured limits.
-
-    Applies the render timeout, the memory ceiling, ``OPENSCADPATH`` for
-    include paths, and a fresh session so terminal signals never reach the
-    child. On timeout the partial stderr is kept in the error so the model
-    sees what OpenSCAD reported before it was killed.
-    """
-    config = get_config()
-    full_cmd = _wrap_with_memory_limit(cmd)
-    try:
-        return subprocess.run(
-            full_cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=config.rendering.timeout_seconds,
-            env=_openscad_env(include_paths),
-            stdin=subprocess.DEVNULL,
-            start_new_session=(os.name == "posix"),
-        )
-    except subprocess.TimeoutExpired as exc:
-        partial = exc.stderr
-        if isinstance(partial, bytes):
-            partial = partial.decode("utf-8", errors="replace")
-        tail = ""
-        if partial:
-            diag = parse_openscad_output(partial, None)
-            lines = diag.errors + diag.warnings
-            if not lines:
-                lines = [ln for ln in partial.splitlines() if ln.strip()][-5:]
-            if lines:
-                tail = " Output before timeout: " + " | ".join(lines[-5:])
-        raise RuntimeError(
-            f"OpenSCAD {label} timed out after {config.rendering.timeout_seconds} seconds.{tail}"
-        ) from exc
-
-
-def _openscad_env(
-    include_paths: list[str] | None = None,
-) -> dict[str, str] | None:
-    """
-    Build the environment for an OpenSCAD subprocess, honouring include paths.
-
-    OpenSCAD has no include-path command line flag. Library and include
-    search paths come from the OPENSCADPATH environment variable, which is
-    os.pathsep-separated. Anything already set in the environment is kept and
-    searched after the caller's paths, so configuring OPENSCADPATH globally
-    still works.
-
-    Returns None when there is nothing to add, so the subprocess simply
-    inherits the parent environment.
-    """
-    if not include_paths:
-        return None
-    env = os.environ.copy()
-    paths = [str(p) for p in include_paths]
-    existing = env.get("OPENSCADPATH", "")
-    if existing:
-        paths.append(existing)
-    env["OPENSCADPATH"] = os.pathsep.join(paths)
-    return env
-
-
-def _format_variables(variables: dict[str, Any] | None) -> list[str]:
-    """Turn a variables dict into ``-D name=value`` argv pairs."""
-    args: list[str] = []
-    if not variables:
-        return args
-    for key, value in variables.items():
-        if isinstance(value, str):
-            val_str = f'"{value}"'
-        elif isinstance(value, bool):
-            val_str = "true" if value else "false"
-        else:
-            val_str = str(value)
-        args.extend(["-D", f"{key}={val_str}"])
-    return args
-
 
 # ============================================================================
 # Security helpers
