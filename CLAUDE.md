@@ -104,6 +104,7 @@ This file contains the FastMCP server instance, all MCP tools, helpers, and rend
 - **`parameters.py`** — flexible normalization of list, mapping, camera, and image-size values from MCP clients; `server.py` re-exports the helpers for compatibility
 - **`responses.py`** — image response sizing, PNG compression, and file fallback; `server.py` keeps compatibility wrappers for existing imports and test patch points
 - **`render_cache.py`** — cache keys, dependency manifests, content-hash invalidation, TTL checks, and whole-entry eviction for renders and exported parts
+- **`runtime.py`** — OpenSCAD executable discovery, version parsing, capability gates, and platform-specific library search paths
 - **`utils/config.py`** — Configuration via Pydantic models with env var, `.env`, and YAML support. Singleton access via `get_config()`/`set_config()`. Configs: `RenderingConfig`, `CacheConfig`, `SecurityConfig`, `ServerConfig`, `Config`
 
 ### Security

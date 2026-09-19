@@ -72,6 +72,25 @@ from .responses import (
 from .responses import (
     save_image_to_file as _save_image_to_file,
 )
+from .runtime import (
+    OPENSCAD_COMMON_PATHS as _OPENSCAD_COMMON_PATHS,
+)
+from .runtime import (
+    OPENSCAD_NAMES as _OPENSCAD_NAMES,
+)
+from .runtime import (
+    find_openscad,
+    get_openscad_capabilities,
+)
+from .runtime import (
+    library_search_paths as _library_search_paths,
+)
+from .runtime import (
+    reset_openscad_cache as _runtime_reset_openscad_cache,
+)
+from .runtime import (
+    version_tuple as _version_tuple,
+)
 from .utils.config import get_config, get_render_semaphore
 
 logger = logging.getLogger(__name__)
@@ -111,167 +130,14 @@ def _tool_fn(tool: Any) -> Any:
     return getattr(tool, "fn", tool)
 
 
+def _reset_openscad_cache() -> None:
+    """Compatibility wrapper for tests and configuration reloads."""
+    _runtime_reset_openscad_cache()
+
+
 # ============================================================================
 # OpenSCAD binary discovery and capabilities
 # ============================================================================
-
-# Executable names to look up on PATH, most specific first. The nightly
-# package is deliberately named so it co-installs with the 2021.01 release.
-_OPENSCAD_NAMES = ["openscad-nightly", "openscad", "OpenSCAD", "openscad.exe"]
-
-# Fixed locations checked after PATH. Nightly / snapshot layouts included.
-_OPENSCAD_COMMON_PATHS = [
-    "/usr/bin/openscad-nightly",
-    "/usr/local/bin/openscad-nightly",
-    "/snap/bin/openscad-nightly",
-    "/usr/bin/openscad",
-    "/usr/local/bin/openscad",
-    "/snap/bin/openscad",
-    "/var/lib/flatpak/exports/bin/org.openscad.OpenSCAD",
-    "/Applications/OpenSCAD.app/Contents/MacOS/OpenSCAD",
-    "/Applications/OpenSCAD-nightly.app/Contents/MacOS/OpenSCAD",
-    "C:\\Program Files\\OpenSCAD\\openscad.exe",
-    "C:\\Program Files\\OpenSCAD (Nightly)\\openscad.exe",
-    "C:\\Program Files (x86)\\OpenSCAD\\openscad.exe",
-]
-
-_VERSION_RE = re.compile(r"OpenSCAD version (\S+)")
-
-# Memoised discovery. OpenSCAD is probed once per configured path; every
-# render used to re-exec ``openscad --version`` before even checking the
-# cache.
-_openscad_cache: dict[str, str | None] = {}
-_capability_cache: dict[str, dict[str, Any]] = {}
-
-
-def _reset_openscad_cache() -> None:
-    """Forget discovered binaries and capability records (tests, config reload)."""
-    _openscad_cache.clear()
-    _capability_cache.clear()
-
-
-def _probe_version(path: str) -> str | None:
-    """Return the version string printed by ``openscad --version``, or None.
-
-    2021.01 prints it on stderr; newer builds print on stdout. Both are read.
-    """
-    try:
-        result = subprocess.run(
-            [path, "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=15,
-            stdin=subprocess.DEVNULL,
-        )
-    except Exception:
-        # FileNotFoundError, PermissionError, TimeoutExpired, or anything a
-        # broken shim raises: the candidate is simply not usable.
-        return None
-    text = f"{result.stdout or ''}\n{result.stderr or ''}"
-    m = _VERSION_RE.search(text)
-    if m:
-        return m.group(1)
-    stripped = text.strip()
-    return stripped.splitlines()[0] if stripped else None
-
-
-def _version_tuple(version: str | None) -> tuple[int, ...]:
-    """Sortable tuple from strings like ``2021.01`` or ``2025.08.17``."""
-    if not version:
-        return (0,)
-    parts: list[int] = []
-    for piece in re.split(r"[.\-]", version):
-        m = re.match(r"\d+", piece)
-        if not m:
-            break
-        parts.append(int(m.group(0)))
-    return tuple(parts) if parts else (0,)
-
-
-def find_openscad() -> str | None:
-    """Locate the OpenSCAD executable.
-
-    Order: the configured ``openscad_path`` (or ``OPENSCAD_PATH``), then
-    every executable name on PATH and every known install location, both
-    stable and nightly. When more than one candidate is found the newest
-    version wins. The result is memoised per configured path.
-    """
-    config = get_config()
-    configured = config.openscad_path or ""
-    if configured in _openscad_cache:
-        return _openscad_cache[configured]
-
-    found: str | None = None
-    if configured and Path(configured).exists():
-        found = configured
-    else:
-        # Every candidate is probed by executing it: names via PATH lookup by
-        # the OS, fixed locations only if present. Among the ones that run,
-        # the newest version wins; ties keep list order.
-        probed: list[tuple[str, str | None]] = []
-        for name in _OPENSCAD_NAMES:
-            probed.append((name, _probe_version(name)))
-        for common in _OPENSCAD_COMMON_PATHS:
-            if Path(common).exists():
-                probed.append((common, _probe_version(common)))
-
-        best: tuple[tuple[int, ...], int, str] | None = None
-        for idx, (cand, version) in enumerate(probed):
-            if version is None:
-                continue
-            _capability_cache.setdefault(cand, {})["version"] = version
-            key = (_version_tuple(version), -idx, cand)
-            if best is None or key[:2] > best[:2]:
-                best = key
-        if best is not None:
-            found = best[2]
-        else:
-            # Nothing executed. A fixed path that exists but could not be
-            # probed (permissions, sandbox) is still the best guess.
-            existing = [c for c, _ in probed if c.startswith(("/", "C:"))]
-            found = existing[0] if existing else None
-
-    _openscad_cache[configured] = found
-    return found
-
-
-def get_openscad_capabilities(path: str | None = None) -> dict[str, Any]:
-    """Return a cached capability record for the OpenSCAD binary.
-
-    The record is probed once per binary path and reused by every tool, so
-    version-dependent behaviour (nightly-only flags, removed formats) can be
-    decided without re-executing OpenSCAD.
-    """
-    if path is None:
-        path = find_openscad()
-    if not path:
-        return {"installed": False}
-    cached = _capability_cache.get(path)
-    if cached and cached.get("probed"):
-        return cached
-
-    version = (cached or {}).get("version") or _probe_version(path)
-    vt = _version_tuple(version)
-    is_snapshot = bool(version) and (len(vt) >= 3 or "git" in (version or ""))
-    record: dict[str, Any] = {
-        "installed": True,
-        "path": str(path),
-        "version": version,
-        "version_tuple": list(vt),
-        "is_snapshot": is_snapshot,
-        # Feature gates by version. 2021.01 is the stable floor.
-        "has_manifold_backend": vt >= (2024, 9),
-        "has_summary_json": vt >= (2022,),
-        "has_egl_headless": vt >= (2023, 9),
-        "amf_export": vt < (2026,),
-        "probed": True,
-    }
-    _capability_cache[path] = record
-    return record
-
 
 # ============================================================================
 # Subprocess execution
@@ -429,43 +295,6 @@ def _is_within(resolved: str | Path, allowed_root: str | Path) -> bool:
     except (OSError, ValueError):
         # An unresolvable or malformed root can never contain anything.
         return False
-
-
-def _library_search_paths() -> list[Path]:
-    """Standard OpenSCAD library directories for this platform plus OPENSCADPATH."""
-    search_paths: list[Path] = []
-    system = platform.system()
-    home = Path.home()
-    if system == "Linux":
-        search_paths.extend(
-            [
-                home / ".local" / "share" / "OpenSCAD" / "libraries",
-                Path("/usr/share/openscad/libraries"),
-                Path("/usr/share/openscad-nightly/libraries"),
-                Path("/usr/local/share/openscad/libraries"),
-            ]
-        )
-    elif system == "Darwin":
-        search_paths.extend(
-            [
-                home / "Documents" / "OpenSCAD" / "libraries",
-                home / "Library" / "Application Support" / "OpenSCAD" / "libraries",
-            ]
-        )
-    elif system == "Windows":
-        search_paths.extend(
-            [
-                home / "Documents" / "OpenSCAD" / "libraries",
-            ]
-        )
-    openscad_env = os.environ.get("OPENSCADPATH")
-    if openscad_env:
-        for p in openscad_env.split(os.pathsep):
-            if p.strip():
-                env_path = Path(p.strip())
-                if env_path not in search_paths:
-                    search_paths.append(env_path)
-    return search_paths
 
 
 def _check_allowed_path(path: str | Path, what: str) -> None:

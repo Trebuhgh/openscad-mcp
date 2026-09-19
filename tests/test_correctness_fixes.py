@@ -391,6 +391,11 @@ class TestCacheDependencyValidation:
         proj = env / "proj"
         params = proj / "params.scad"
         params.write_text("W = 10;\n")
+        # Keep the dependency unambiguously older than render_start. On fast
+        # filesystems, a freshly written include can otherwise trigger the
+        # intentional write-race guard and make this cache-hit test flaky.
+        initial_mtime = time.time() - 10
+        os.utime(params, (initial_mtime, initial_mtime))
         main = proj / "main.scad"
         main.write_text("include <params.scad>\ncube(W);\n")
         renders = {"n": 0}
