@@ -50,6 +50,16 @@ from .parameters import (
     parse_image_size_param,
     parse_list_param,
 )
+from .render_cache import (
+    _build_cache_manifest,
+    _compute_render_cache_key,
+    _evict_cache_if_needed,
+    _hash_field,
+    _save_to_cache,
+)
+from .render_cache import (
+    _check_cache as _check_render_cache,
+)
 from .responses import (
     compress_base64_image as _compress_base64_image,
 )
@@ -547,294 +557,15 @@ def _check_dependency_closure(
 # ============================================================================
 
 
-def _hash_field(hasher: "hashlib._Hash", value: Any) -> None:
-    """Feed one length-prefixed field so adjacent fields can never merge."""
-    data = value if isinstance(value, bytes) else json.dumps(value, sort_keys=True).encode()
-    hasher.update(len(data).to_bytes(8, "big"))
-    hasher.update(data)
-
-
-def _compute_render_cache_key(
-    scad_content: str | None = None,
-    scad_file: str | None = None,
-    camera_position: list[float] | None = None,
-    camera_target: list[float] | None = None,
-    camera_up: list[float] | None = None,
-    image_size: list[int] | None = None,
-    color_scheme: str = "Cornfield",
-    variables: dict[str, Any] | None = None,
-    auto_center: bool = False,
-    include_paths: list[str] | None = None,
-    binary_identity: str | None = None,
-) -> str:
-    """Compute a SHA-256 cache key from all rendering parameters.
-
-    When *scad_file* is provided (instead of inline content), the file's
-    contents are read and hashed so that changes to the file on disk
-    correctly invalidate the cache entry. Files pulled in through
-    ``include``/``use``/``import``/``surface`` are not part of the key;
-    they are validated on lookup through the cache manifest instead.
-
-    Args:
-        scad_content: Inline OpenSCAD source code.
-        scad_file: Path to an OpenSCAD file.
-        camera_position: Camera eye position [x, y, z].
-        camera_target: Camera look-at point [x, y, z].
-        camera_up: Camera up vector [x, y, z].
-        image_size: Output image dimensions [width, height].
-        color_scheme: OpenSCAD colour scheme name.
-        variables: OpenSCAD ``-D`` variables.
-        auto_center: Whether auto-centre / view-all is enabled.
-        include_paths: Extra include directories.
-        binary_identity: Path and version of the OpenSCAD binary.
-
-    Returns:
-        Hex-encoded SHA-256 digest string.
-    """
-    hasher = hashlib.sha256()
-
-    # Hash the actual SCAD source
-    if scad_content:
-        _hash_field(hasher, scad_content.encode("utf-8"))
-    elif scad_file:
-        try:
-            _hash_field(hasher, Path(scad_file).read_bytes())
-        except OSError:
-            # If we cannot read the file fall back to hashing the path
-            _hash_field(hasher, scad_file.encode("utf-8"))
-    else:
-        _hash_field(hasher, b"")
-
-    for value in (
-        camera_position,
-        camera_target,
-        camera_up,
-        image_size,
-        color_scheme,
-        variables or {},
-        bool(auto_center),
-        include_paths or [],
-        binary_identity or "",
-    ):
-        _hash_field(hasher, value)
-
-    return hasher.hexdigest()
-
-
-def _manifest_path(cache_key: str) -> Path:
-    return get_config().cache.directory / f"{cache_key}.json"
-
-
-def _file_fingerprint(path: Path, with_hash: bool = True) -> dict[str, Any] | None:
-    try:
-        st = path.stat()
-    except OSError:
-        return None
-    entry: dict[str, Any] = {
-        "path": str(path),
-        "size": st.st_size,
-        "mtime_ns": st.st_mtime_ns,
-    }
-    if with_hash:
-        try:
-            entry["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-        except OSError:
-            return None
-    return entry
-
-
-def _build_cache_manifest(
-    deps: list[str],
-    scad_dir: Path,
-    missing_includes: list[str],
-    diagnostics: Diagnostics,
-    exclude: list[Path] | None = None,
-) -> dict[str, Any]:
-    """Record every file the render depended on, with size/mtime/sha256.
-
-    *exclude* lists files already covered by the cache key (the top-level
-    source, which for inline content is a temp file that will not exist at
-    lookup time).
-    """
-    excluded = {p.resolve() for p in (exclude or [])}
-    entries: list[dict[str, Any]] = []
-    for dep in deps:
-        p = Path(dep)
-        if not p.is_absolute():
-            p = scad_dir / p
-        try:
-            if p.resolve() in excluded:
-                continue
-        except OSError:
-            continue
-        fp = _file_fingerprint(p)
-        if fp is not None:
-            entries.append(fp)
-    return {
-        "version": 1,
-        "dependencies": entries,
-        "unresolved_includes": missing_includes,
-        "scad_dir": str(scad_dir),
-        "diagnostics": diagnostics.to_dict(include_records=True),
-        "statistics": diagnostics.statistics,
-    }
-
-
-def _manifest_is_current(manifest: dict[str, Any], include_paths: list[str] | None) -> bool:
-    """True if every recorded dependency is unchanged and no missing include appeared."""
-    for entry in manifest.get("dependencies", []):
-        p = Path(entry["path"])
-        fresh = _file_fingerprint(p, with_hash=True)
-        if fresh is None:
-            return False
-        # Editors and synchronizers can preserve both file length and timestamp.
-        # Only the content hash proves that the dependency is unchanged.
-        if fresh.get("sha256") != entry.get("sha256"):
-            return False
-
-    # Negative dependencies: includes that could not be opened at render
-    # time. If one exists now, the cached image was built without it.
-    search_dirs: list[Path] = [Path(manifest.get("scad_dir", "."))]
-    search_dirs.extend(Path(p) for p in (include_paths or []))
-    search_dirs.extend(_library_search_paths())
-    for name in manifest.get("unresolved_includes", []):
-        for d in search_dirs:
-            if (d / name).exists():
-                return False
-    return True
-
-
 def _check_cache(
     cache_key: str, include_paths: list[str] | None = None
 ) -> tuple[str, dict[str, Any]] | None:
-    """Return ``(base64 PNG, manifest)`` on a validated hit, else None.
-
-    A hit requires the PNG, a manifest, an unexpired TTL, and every
-    dependency recorded in the manifest to be unchanged.
-    """
-    config = get_config()
-    if not config.cache.enabled:
-        return None
-
-    cache_file = config.cache.directory / f"{cache_key}.png"
-    manifest_file = _manifest_path(cache_key)
-    if not cache_file.exists():
-        return None
-
-    # Check TTL
-    age_hours = (time.time() - cache_file.stat().st_mtime) / 3600.0
-    if age_hours > config.cache.ttl_hours:
-        _remove_cache_entry(cache_key)
-        return None
-
-    if not manifest_file.exists():
-        # Pre-manifest entry: cannot be validated, so treat as a miss.
-        _remove_cache_entry(cache_key)
-        return None
-    try:
-        manifest = json.loads(manifest_file.read_text())
-    except (OSError, ValueError):
-        _remove_cache_entry(cache_key)
-        return None
-
-    if not _manifest_is_current(manifest, include_paths):
-        _remove_cache_entry(cache_key)
-        return None
-
-    try:
-        image_data = cache_file.read_bytes()
-        return base64.b64encode(image_data).decode("utf-8"), manifest
-    except OSError:
-        return None
-
-
-def _remove_cache_entry(cache_key: str) -> None:
-    config = get_config()
-    for suffix in (".png", ".json"):
-        with contextlib.suppress(OSError):
-            (config.cache.directory / f"{cache_key}{suffix}").unlink()
-
-
-def _save_to_cache(
-    cache_key: str, image_data: bytes, manifest: dict[str, Any] | None = None
-) -> None:
-    """Save raw PNG bytes plus the dependency manifest, evicting if needed.
-
-    Args:
-        cache_key: Hex digest returned by ``_compute_render_cache_key``.
-        image_data: Raw PNG image bytes (not base64).
-        manifest: Dependency manifest from ``_build_cache_manifest``.
-    """
-    config = get_config()
-    if not config.cache.enabled:
-        return
-
-    config.cache.ensure_cache_directory()
-    cache_file = config.cache.directory / f"{cache_key}.png"
-
-    try:
-        _manifest_path(cache_key).write_text(
-            json.dumps(manifest or {"version": 1, "dependencies": []})
-        )
-        cache_file.write_bytes(image_data)
-    except OSError as exc:
-        logger.warning("Failed to write render cache entry: %s", exc)
-        _remove_cache_entry(cache_key)
-        return
-
-    # Evict oldest files if the cache exceeds the size limit
-    _evict_cache_if_needed()
-
-
-def _evict_cache_if_needed() -> None:
-    """Delete the oldest cache entries until total size is within limits.
-
-    An entry is every file sharing one key: ``<key>.png`` + ``<key>.json`` for
-    renders at the top level, and ``parts/<key>.stl`` + ``.json`` + ``.csg``
-    for per-part meshes. Entries are evicted whole, oldest first, so a mesh
-    never outlives its manifest and the size cap covers the parts cache too.
-    """
-    config = get_config()
-    if not config.cache.enabled:
-        return
-
-    cache_dir = config.cache.directory
-    if not cache_dir.exists():
-        return
-
-    max_bytes = config.cache.max_size_mb * 1024 * 1024
-
-    # Group files by (directory, stem); each group is one cache entry.
-    entries: dict[tuple[Path, str], list[tuple[Path, int]]] = {}
-    newest: dict[tuple[Path, str], float] = {}
-    total_size = 0
-    candidates = list(cache_dir.glob("*.png")) + list(cache_dir.glob("*.json"))
-    parts_dir = cache_dir / "parts"
-    if parts_dir.is_dir():
-        candidates += [f for f in parts_dir.iterdir() if f.suffix in (".stl", ".json", ".csg")]
-    for f in candidates:
-        try:
-            stat = f.stat()
-        except OSError:
-            continue
-        key = (f.parent, f.stem)
-        entries.setdefault(key, []).append((f, stat.st_size))
-        newest[key] = max(newest.get(key, 0.0), stat.st_mtime)
-        total_size += stat.st_size
-
-    if total_size <= max_bytes:
-        return
-
-    # Oldest entry first (by its most recently touched file)
-    for key in sorted(entries, key=lambda k: newest[k]):
-        if total_size <= max_bytes:
-            break
-        for file_path, file_size in entries[key]:
-            try:
-                file_path.unlink()
-                total_size -= file_size
-            except OSError:
-                continue
+    """Compatibility wrapper adding the host's OpenSCAD library paths."""
+    return _check_render_cache(
+        cache_key,
+        include_paths=include_paths,
+        library_paths=_library_search_paths(),
+    )
 
 
 # ============================================================================
