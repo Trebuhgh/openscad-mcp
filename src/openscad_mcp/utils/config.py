@@ -12,7 +12,6 @@ import os
 import tempfile
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -118,7 +117,7 @@ class SecurityConfig(BaseModel):
         le=100,
         description="Maximum SCAD file size in MB",
     )
-    allowed_paths: Optional[list[str]] = Field(
+    allowed_paths: list[str] | None = Field(
         None,
         description=(
             "Directories the server may read .scad files and their "
@@ -148,7 +147,7 @@ class LoggingConfig(BaseModel):
         description="Logging level",
         pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$",
     )
-    file: Optional[Path] = Field(
+    file: Path | None = Field(
         None,
         description="Log file path",
     )
@@ -197,11 +196,11 @@ class Config(BaseModel):
     """Main configuration class."""
 
     # Paths
-    openscad_path: Optional[str] = Field(
+    openscad_path: str | None = Field(
         None,
         description="Path to OpenSCAD executable",
     )
-    imagemagick_path: Optional[str] = Field(
+    imagemagick_path: str | None = Field(
         None,
         description="Path to ImageMagick convert command",
     )
@@ -220,14 +219,14 @@ class Config(BaseModel):
 
     @field_validator("temp_dir", mode="before")
     @classmethod
-    def set_temp_dir_default(cls, v: Optional[Path]) -> Path:
+    def set_temp_dir_default(cls, v: Path | None) -> Path:
         """Use the host's writable temporary directory at configuration time."""
         if v is None:
             return Path(tempfile.gettempdir()) / "openscad-mcp"
         return Path(v)
 
     @classmethod
-    def from_env(cls, env_file: Optional[str] = None) -> "Config":
+    def from_env(cls, env_file: str | None = None) -> "Config":
         """
         Load configuration from environment variables.
 
@@ -327,7 +326,7 @@ class Config(BaseModel):
         Returns:
             Configured Config instance
         """
-        with open(yaml_file, "r", encoding="utf-8-sig") as f:
+        with open(yaml_file, encoding="utf-8-sig") as f:
             config_dict = yaml.safe_load(f)
         if config_dict is None:
             config_dict = {}
@@ -350,7 +349,7 @@ class Config(BaseModel):
             )
 
 
-def setup_logging(logging_config: Optional[LoggingConfig] = None) -> None:
+def setup_logging(logging_config: LoggingConfig | None = None) -> None:
     """Configure the root logger based on LoggingConfig settings.
 
     Sets the root logger level and optionally adds a rotating file handler
@@ -378,9 +377,7 @@ def setup_logging(logging_config: Optional[LoggingConfig] = None) -> None:
             encoding="utf-8",
         )
         file_handler.setLevel(getattr(logging, logging_config.level, logging.INFO))
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
 
@@ -388,8 +385,8 @@ def setup_logging(logging_config: Optional[LoggingConfig] = None) -> None:
 # Module-level concurrency semaphore for rendering.
 # Initialized lazily via get_render_semaphore() so that the semaphore is
 # created inside a running event loop and respects the configured max_concurrent.
-_render_semaphore: Optional[asyncio.Semaphore] = None
-_render_semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
+_render_semaphore: asyncio.Semaphore | None = None
+_render_semaphore_loop: asyncio.AbstractEventLoop | None = None
 
 
 def get_render_semaphore() -> asyncio.Semaphore:
@@ -405,7 +402,7 @@ def get_render_semaphore() -> asyncio.Semaphore:
     """
     global _render_semaphore, _render_semaphore_loop
     try:
-        loop: Optional[asyncio.AbstractEventLoop] = asyncio.get_running_loop()
+        loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
     if _render_semaphore is None or _render_semaphore_loop is not loop:
@@ -416,7 +413,7 @@ def get_render_semaphore() -> asyncio.Semaphore:
 
 
 # Global configuration instance
-_config: Optional[Config] = None
+_config: Config | None = None
 
 
 def get_config() -> Config:
@@ -432,7 +429,7 @@ def get_config() -> Config:
     return _config
 
 
-def set_config(config: Optional[Config]) -> None:
+def set_config(config: Config | None) -> None:
     """
     Set the global configuration instance.
 

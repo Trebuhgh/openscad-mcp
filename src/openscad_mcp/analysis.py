@@ -1065,8 +1065,7 @@ def apply_rewrite(plan: RewritePlan) -> Path:
     """Write a safe plan to its caller file. Raises on an unsafe plan."""
     if not plan.safe:
         raise ValueError(
-            "refusing to apply an unsafe rewrite of "
-            f"{plan.caller_path}: " + "; ".join(plan.reasons)
+            f"refusing to apply an unsafe rewrite of {plan.caller_path}: " + "; ".join(plan.reasons)
         )
     plan.caller_path.write_text(plan.new_text, encoding="utf-8")
     return plan.caller_path

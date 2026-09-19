@@ -339,10 +339,9 @@ uv run openscad-mcp check examples/checks/turntable.yaml
 # Run tests
 uv run pytest
 
-# Lint & format. The tree carries pre-existing findings, so expect noise;
-# CI gates only on `ruff check --select F,E9,B src/openscad_mcp/`.
-uv run ruff check src/ tests/
-uv run black --check src/ tests/
+# Lint and verify formatting (the same source-tree gate used by CI)
+uv run ruff check src/openscad_mcp/
+uv run ruff format --check src/openscad_mcp/
 
 # Type check (also not clean today)
 uv run mypy src/
@@ -399,8 +398,8 @@ files OpenSCAD would have written: the `-o` target and the `-d` dependency file
 that the cache manifest is built from. Tests that do need the real binary skip
 themselves when it is absent.
 
-CI runs the suite on Python 3.10 and 3.12 with OpenSCAD 2021.01 and BOSL2
-installed, under `xvfb-run` because PNG export on 2021.01 needs a display. It
+CI runs the suite on Python 3.10, 3.11 and 3.12 with OpenSCAD 2021.01 and a
+pinned BOSL2 release, under `xvfb-run` because PNG export on 2021.01 needs a display. It
 also builds the wheel, installs it in a clean environment, and asserts that a
 client sees exactly 12 tools. Coverage floor: 80%.
 

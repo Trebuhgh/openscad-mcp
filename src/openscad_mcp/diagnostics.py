@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # One tolerant pattern covers every line class OpenSCAD 2021.01 emits. There
 # is no column number in 2021.01, and both "msg in file X, line N" and
@@ -49,7 +49,7 @@ SEVERITY_WARNINGS = {"WARNING", "EXPORT-WARNING"}
 
 # Repair hints keyed to substrings that appear in real 2021.01 output. The
 # text is written for the model that reads it, so it says what to do next.
-_HINTS: List[tuple[str, str, str]] = [
+_HINTS: list[tuple[str, str, str]] = [
     (
         "unknown_symbol",
         "Ignoring unknown",
@@ -67,8 +67,7 @@ _HINTS: List[tuple[str, str, str]] = [
     (
         "missing_include",
         "Can't open library",
-        "A use <...> target could not be found. Check the path and OPENSCADPATH / "
-        "include_paths.",
+        "A use <...> target could not be found. Check the path and OPENSCADPATH / include_paths.",
     ),
     (
         "syntax_error",
@@ -123,12 +122,12 @@ class DiagnosticRecord:
 
     severity: str
     message: str
-    file: Optional[str] = None
-    line: Optional[int] = None
-    trace: List[str] = field(default_factory=list)
+    file: str | None = None
+    line: int | None = None
+    trace: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {"severity": self.severity, "message": self.message}
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"severity": self.severity, "message": self.message}
         if self.file is not None:
             d["file"] = self.file
         if self.line is not None:
@@ -148,24 +147,24 @@ class DiagnosticRecord:
 class Diagnostics:
     """Everything a tool needs to know about one OpenSCAD run."""
 
-    returncode: Optional[int]
-    records: List[DiagnosticRecord] = field(default_factory=list)
-    echo_output: List[str] = field(default_factory=list)
+    returncode: int | None
+    records: list[DiagnosticRecord] = field(default_factory=list)
+    echo_output: list[str] = field(default_factory=list)
     echo_truncated: bool = False
-    statistics: Dict[str, Any] = field(default_factory=dict)
+    statistics: dict[str, Any] = field(default_factory=dict)
     empty_output: bool = False
-    raw_tail: List[str] = field(default_factory=list)
+    raw_tail: list[str] = field(default_factory=list)
 
     @property
-    def errors(self) -> List[str]:
+    def errors(self) -> list[str]:
         return [r.format() for r in self.records if r.severity in SEVERITY_ERRORS]
 
     @property
-    def warnings(self) -> List[str]:
+    def warnings(self) -> list[str]:
         return [r.format() for r in self.records if r.severity in SEVERITY_WARNINGS]
 
     @property
-    def deprecated(self) -> List[str]:
+    def deprecated(self) -> list[str]:
         return [r.format() for r in self.records if r.severity == "DEPRECATED"]
 
     @property
@@ -173,10 +172,10 @@ class Diagnostics:
         """The run produced a trustworthy result: exit 0 and no ERROR record."""
         return (self.returncode == 0) and not self.errors
 
-    def hints(self) -> List[Dict[str, str]]:
+    def hints(self) -> list[dict[str, str]]:
         """Repair hints for the message classes present, each emitted once."""
         seen: set[str] = set()
-        out: List[Dict[str, str]] = []
+        out: list[dict[str, str]] = []
         texts = [r.message for r in self.records]
         if self.empty_output:
             texts.append(_EMPTY_OBJECT)
@@ -188,7 +187,7 @@ class Diagnostics:
                 out.append({"code": code, "hint": advice})
         return out
 
-    def mesh_health(self) -> Dict[str, Any]:
+    def mesh_health(self) -> dict[str, Any]:
         """Summarise the CGAL banner. Absent statistics mean *unknown*, not failure.
 
         ``Volumes`` is deliberately not reported as a body count: CGAL counts the
@@ -197,8 +196,8 @@ class Diagnostics:
         """
         stats = self.statistics
         simple = stats.get("Simple")
-        manifold: Optional[bool] = None if simple is None else str(simple).lower() == "yes"
-        health: Dict[str, Any] = {"manifold": manifold}
+        manifold: bool | None = None if simple is None else str(simple).lower() == "yes"
+        health: dict[str, Any] = {"manifold": manifold}
         if manifold is False:
             health["issue"] = (
                 "not a valid 2-manifold; parts likely touch along an edge or face, "
@@ -220,8 +219,8 @@ class Diagnostics:
             )
         return health
 
-    def to_dict(self, include_records: bool = True) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self, include_records: bool = True) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "errors": self.errors,
             "warnings": self.warnings,
             "deprecated": self.deprecated,
@@ -246,8 +245,8 @@ def _coerce_stat(value: str) -> Any:
 
 def parse_openscad_output(
     stderr: str,
-    returncode: Optional[int] = None,
-    inline_path: Optional[str] = None,
+    returncode: int | None = None,
+    inline_path: str | None = None,
     echo_max_lines: int = ECHO_MAX_LINES,
     echo_max_chars: int = ECHO_MAX_CHARS,
 ) -> Diagnostics:
@@ -367,7 +366,7 @@ def parse_openscad_output(
 # ---------------------------------------------------------------------------
 
 
-def parse_deps_file(text: str) -> List[str]:
+def parse_deps_file(text: str) -> list[str]:
     """Parse the Makefile-style dependency list OpenSCAD writes for ``-d``.
 
     Format::
@@ -393,8 +392,8 @@ def parse_deps_file(text: str) -> List[str]:
     if not m:
         return []
     body = joined[m.end() :]
-    deps: List[str] = []
-    token: List[str] = []
+    deps: list[str] = []
+    token: list[str] = []
     i = 0
     n = len(body)
     while i < n:
@@ -419,14 +418,14 @@ def parse_deps_file(text: str) -> List[str]:
 _MISSING_INCLUDE_RE = re.compile(r"Can't open (?:include file|library) '(?P<name>[^']+)'")
 
 
-def unresolved_includes(diag: Diagnostics) -> List[str]:
+def unresolved_includes(diag: Diagnostics) -> list[str]:
     """Names of include/use targets OpenSCAD reported it could not open.
 
     ``-d`` records files that *were* read, not files that would have been.
     These names are negative dependencies: if one of them appears later, a
     cached render built without it is stale.
     """
-    names: List[str] = []
+    names: list[str] = []
     for r in diag.records:
         m = _MISSING_INCLUDE_RE.search(r.message)
         if m and m.group("name") not in names:
@@ -444,7 +443,7 @@ _INCLUDE_USE_RE = re.compile(r"\b(?:include|use)\s*<\s*([^>\n]+?)\s*>")
 _FILE_CALL_RE = re.compile(r"\b(?:import|surface)\s*\(\s*(?:file\s*=\s*)?\"([^\"\n]+)\"")
 
 
-def extract_source_dependencies(text: str) -> List[str]:
+def extract_source_dependencies(text: str) -> list[str]:
     """Return the file references written in OpenSCAD source, in order.
 
     Finds ``include <...>`` and ``use <...>`` anywhere in the text (not only
@@ -455,7 +454,7 @@ def extract_source_dependencies(text: str) -> List[str]:
     the ``-d`` closure is the authoritative list.
     """
     stripped = _LINE_COMMENT_RE.sub("", _BLOCK_COMMENT_RE.sub("", text))
-    found: List[str] = []
+    found: list[str] = []
     for m in _INCLUDE_USE_RE.finditer(stripped):
         ref = m.group(1).strip()
         if ref and ref not in found:

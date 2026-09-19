@@ -69,7 +69,9 @@ _VERBOSE_FIELDS = ("note", "keywords")
 # --------------------------------------------------------------------------
 
 _SRC_ISO_273 = "ISO 273 (clearance holes for bolts and screws); table via IS 1821:1987, identical to ISO 273-1979, https://law.resource.org/pub/in/bis/S01/is.1821.1987.pdf"  # noqa: E501
-_SRC_ISO_4762 = "ISO 4762 (hexagon socket head cap screws), https://www.fasteners.eu/standards/ISO/4762/"  # noqa: E501
+_SRC_ISO_4762 = (
+    "ISO 4762 (hexagon socket head cap screws), https://www.fasteners.eu/standards/ISO/4762/"  # noqa: E501
+)
 _SRC_ISO_4032 = "ISO 4032 (hexagon regular nuts, style 1); table as encoded in BOSL2 screws.scad _nut_info_metric, https://github.com/BelfrySCAD/BOSL2/blob/master/screws.scad"  # noqa: E501
 _SRC_TAP_DRILL = "Fuller Fasteners recommended tapping drill sizes (ISO metric coarse), https://fullerfasteners.com/tech/recommended-tapping-drill-size/"  # noqa: E501
 _SRC_SLOP = "BOSL2 constants.scad, $slop and get_slop(), https://github.com/BelfrySCAD/BOSL2/wiki/constants.scad"  # noqa: E501
@@ -634,7 +636,7 @@ _JOINTS: list[dict[str, Any]] = [
         "typical_width_mm": 10.0,
         "bosl2_modules": ["knuckle_hinge()", "living_hinge_mask()"],
         "use_when": (
-            "A lid that folds rather than pivots, printed as one part, in polypropylene or " "PETG."
+            "A lid that folds rather than pivots, printed as one part, in polypropylene or PETG."
         ),
         "confidence": "consensus",
         "note": (

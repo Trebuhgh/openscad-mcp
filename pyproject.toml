@@ -168,29 +168,68 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
+pythonpath = ["src"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 addopts = [
+    "--strict-markers",
+    "--tb=short",
     "--cov=openscad_mcp",
     "--cov-report=term-missing",
     "--cov-report=html",
     "--cov-report=xml",
+    "--cov-fail-under=80",
     "-v",
+    "-p", "no:warnings",
+]
+markers = [
+    "unit: fast, isolated tests",
+    "integration: tests that may require external dependencies",
+    "performance: wall-clock performance tests",
+    "slow: tests that take longer than usual",
+    "mcp: MCP protocol tests",
+    "render: rendering tests",
+    "config: configuration tests",
+    "types: type validation tests",
+    "edge: unusual inputs and boundary conditions",
+    "smoke: basic functionality verification",
+    "regression: regression coverage for previously fixed bugs",
 ]
 
 [tool.coverage.run]
 source = ["src/openscad_mcp"]
+branch = true
+parallel = true
+concurrency = ["thread", "multiprocessing"]
 omit = [
     "*/tests/*",
+    "*/__main__.py",
     "*/__pycache__/*",
     "*/test_*.py",
+    "*/.venv/*",
+    "*/venv/*",
 ]
 
 [tool.coverage.report]
+fail_under = 80
+precision = 2
+show_missing = true
+skip_covered = false
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",
+    "def __str__",
     "if __name__ == .__main__.:",
     "raise AssertionError",
     "raise NotImplementedError",
     "if TYPE_CHECKING:",
+    "@(abc\\.)?abstractmethod",
+    "except ImportError:",
+    "pass",
 ]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"

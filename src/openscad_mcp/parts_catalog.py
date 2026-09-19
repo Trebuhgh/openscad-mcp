@@ -111,8 +111,7 @@ _SRC_NEMA_STEPPERONLINE = (
     "https://www.omc-stepperonline.com/index.php?route=product/product/get_file&file=839/17HS15-1504S-X1_Full_Datasheet.pdf"
 )
 _SRC_NEMA_GEMS = (
-    "GEMS Motor GM42BYG NEMA 17 datasheet, "
-    "https://gemsmotor.com/stepper/nema17-stepper-motor.pdf"
+    "GEMS Motor GM42BYG NEMA 17 datasheet, https://gemsmotor.com/stepper/nema17-stepper-motor.pdf"
 )
 _SRC_NEMA_MOTIONKING = (
     "MotionKing 17HS series datasheet MK1106 Rev.04, "
@@ -733,7 +732,7 @@ _TCRT5000: dict[str, Any] = {
         "Where the TCRT5000 package sits on the board. Not sourced. This model "
         "centres it, which is almost certainly wrong for a line-follower board "
         "where the sensor is at one end. Pass sensor_x once you have measured.",
-        "Board thickness. Modelled at 1.6 mm, the usual FR-4 thickness. No vendor " "publishes it.",
+        "Board thickness. Modelled at 1.6 mm, the usual FR-4 thickness. No vendor publishes it.",
         "Standoff between the board and the underside of the sensor package. "
         "Modelled as zero (the package sits on the board). Not sourced.",
         "Pin header position, orientation and height. Not modelled; not published.",
@@ -1108,7 +1107,7 @@ def self_check(part_id: str, openscad: str = "openscad", timeout: float = 180.0)
                 checks.append({"check": label, "ok": False, "detail": str(exc)})
 
         # 3. containment
-        body = f"difference() {{ {solid}(); " f"{mask}(clr=0, bore_clr=0, install_len=0); }}"
+        body = f"difference() {{ {solid}(); {mask}(clr=0, bore_clr=0, install_len=0); }}"
         try:
             out, proc = _render(binary, workdir, "containment", body, scad, timeout)
             stderr = (proc.stderr or "").lower()

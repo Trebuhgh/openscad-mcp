@@ -39,7 +39,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 MODEL_MODULE = "__model"
 EVAL_MARKER = "__OPENSCAD_MCP_EVAL__"
@@ -55,12 +55,12 @@ def format_scad_value(value: Any) -> str:
     if isinstance(value, str):
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return "[" + ", ".join(format_scad_value(v) for v in value) + "]"
     return str(value)
 
 
-def variable_assignments(variables: Optional[Dict[str, Any]]) -> str:
+def variable_assignments(variables: dict[str, Any] | None) -> str:
     """OpenSCAD assignment statements for a variables dict."""
     if not variables:
         return ""
@@ -72,7 +72,7 @@ _INCLUDE_STMT_RE = re.compile(r"(?:include|use)\s*<[^>\n]+>\s*;?")
 _BLOCK_COMMENT_INLINE_RE = re.compile(r"/\*.*?\*/")
 
 
-def hoist_source(text: str) -> Tuple[List[str], str]:
+def hoist_source(text: str) -> tuple[list[str], str]:
     """Split a model into its ``include``/``use`` lines and the remaining body.
 
     Whole lines that consist of one include/use statement (with an optional
@@ -80,8 +80,8 @@ def hoist_source(text: str) -> Tuple[List[str], str]:
     a line with other code are hoisted too and removed from that line.
     Lines inside block comments and after ``//`` are left alone.
     """
-    header: List[str] = []
-    body_lines: List[str] = []
+    header: list[str] = []
+    body_lines: list[str] = []
     in_block = False
     for line in text.splitlines():
         stripped = line.strip()
@@ -126,9 +126,9 @@ class WrappedSource:
 
     text: str
     body_line_offset: int
-    injected: List[str] = field(default_factory=list)
+    injected: list[str] = field(default_factory=list)
 
-    def rebase_line(self, line: int) -> Optional[int]:
+    def rebase_line(self, line: int) -> int | None:
         """Map a wrapper line number back to the model's own numbering."""
         rebased = line - self.body_line_offset
         return rebased if rebased >= 1 else None
@@ -136,13 +136,13 @@ class WrappedSource:
 
 def build_wrapper(
     source_text: str,
-    variables: Optional[Dict[str, Any]] = None,
+    variables: dict[str, Any] | None = None,
     extra_body: str = "",
     tail: str = f"{MODEL_MODULE}();\n",
 ) -> WrappedSource:
     """Build ``__model()`` around the model text with variables injected."""
     header, body = hoist_source(source_text)
-    lines: List[str] = list(header)
+    lines: list[str] = list(header)
     # Variables go in BOTH scopes. Constants defined in a hoisted include
     # live at file scope, and anything derived from them there (D = K * 2)
     # is computed with the file-scope value, so the override must be at
@@ -187,7 +187,7 @@ def absolutize_file_refs(text: str, base_dir: Path) -> str:
     resolved relative to the current file only, hence the rewrite.
     """
 
-    def _sub(m: "re.Match[str]") -> str:
+    def _sub(m: re.Match[str]) -> str:
         ref = m.group(2)
         if Path(ref).is_absolute():
             return m.group(0)
@@ -199,7 +199,7 @@ def absolutize_file_refs(text: str, base_dir: Path) -> str:
 SECTION_AXES = {"x", "y", "z"}
 
 
-def section_transform(axis: str, offset: "float | str") -> str:
+def section_transform(axis: str, offset: float | str) -> str:
     """Transform that moves the requested cut plane onto ``z = 0``.
 
     ``axis`` is the normal of the cut plane: ``"z"`` cuts horizontally at
@@ -228,7 +228,7 @@ def section_transform(axis: str, offset: "float | str") -> str:
     return f"rotate([90, 0, 0]) translate([0, {neg}, 0])"
 
 
-def section_in_plane_axes(axis: str) -> Tuple[str, str]:
+def section_in_plane_axes(axis: str) -> tuple[str, str]:
     axis = axis.lower()
     return {"z": ("x", "y"), "x": ("y", "z"), "y": ("x", "z")}[axis]
 
@@ -236,8 +236,8 @@ def section_in_plane_axes(axis: str) -> Tuple[str, str]:
 def section_wrapper(
     source_text: str,
     axis: str,
-    offset: "float | str",
-    variables: Optional[Dict[str, Any]] = None,
+    offset: float | str,
+    variables: dict[str, Any] | None = None,
 ) -> WrappedSource:
     """Program that exports the cross-section of the model as 2D geometry.
 
@@ -255,10 +255,10 @@ def section_wrapper(
 
 def parts_wrapper(
     source_text: str,
-    parts: List[Dict[str, str]],
-    colors: List[str],
-    isolate: Optional[str] = None,
-    variables: Optional[Dict[str, Any]] = None,
+    parts: list[dict[str, str]],
+    colors: list[str],
+    isolate: str | None = None,
+    variables: dict[str, Any] | None = None,
     ghost_others: bool = True,
 ) -> WrappedSource:
     """Program that instantiates each part in its own colour.
@@ -296,7 +296,7 @@ def _statement(code: str) -> str:
 def part_wrapper(
     source_text: str,
     code: str,
-    variables: Optional[Dict[str, Any]] = None,
+    variables: dict[str, Any] | None = None,
 ) -> WrappedSource:
     """Program that evaluates exactly one part's code with the model's modules.
 
@@ -309,8 +309,8 @@ def part_wrapper(
 
 def eval_wrapper(
     source_text: str,
-    expressions: List[str],
-    variables: Optional[Dict[str, Any]] = None,
+    expressions: list[str],
+    variables: dict[str, Any] | None = None,
 ) -> WrappedSource:
     """Program that echoes each expression, evaluated in the model's scope.
 
@@ -342,7 +342,7 @@ class _EchoParser:
         self.text = text
         self.pos = 0
 
-    def parse_all(self) -> List[Any]:
+    def parse_all(self) -> list[Any]:
         values = []
         self._ws()
         while self.pos < len(self.text):
@@ -382,7 +382,7 @@ class _EchoParser:
         if m2:
             self.pos = m2.end()
             return m2.group(0)
-        raise ValueError(f"cannot parse echo value at {self.text[self.pos:self.pos + 20]!r}")
+        raise ValueError(f"cannot parse echo value at {self.text[self.pos : self.pos + 20]!r}")
 
     def _string(self) -> str:
         assert self.text[self.pos] == '"'
@@ -405,7 +405,7 @@ class _EchoParser:
     def _vector_or_range(self) -> Any:
         assert self.text[self.pos] == "["
         self.pos += 1
-        items: List[Any] = []
+        items: list[Any] = []
         is_range = False
         self._ws()
         if self.pos < len(self.text) and self.text[self.pos] == "]":
@@ -438,14 +438,14 @@ class _EchoParser:
         return items
 
 
-def parse_echo_values(text: str) -> List[Any]:
+def parse_echo_values(text: str) -> list[Any]:
     """Parse the comma-separated values from one ECHO line's payload."""
     return _EchoParser(text).parse_all()
 
 
-def collect_eval_results(echo_lines: List[str], count: int) -> List[Dict[str, Any]]:
+def collect_eval_results(echo_lines: list[str], count: int) -> list[dict[str, Any]]:
     """Pair ``echo("<marker>", i, value)`` lines with their expression index."""
-    results: List[Dict[str, Any]] = [
+    results: list[dict[str, Any]] = [
         {"index": i, "value": None, "evaluated": False} for i in range(count)
     ]
     for line in echo_lines:
@@ -480,7 +480,7 @@ def scad_type_name(value: Any) -> str:
         return "undef"
     if isinstance(value, bool):
         return "bool"
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return "number"
     if isinstance(value, str):
         return "string"

@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -24,7 +24,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q openscad xvfb
           mkdir -p ~/.local/share/OpenSCAD/libraries
-          git clone -q --depth 1 https://github.com/BelfrySCAD/BOSL2.git ~/.local/share/OpenSCAD/libraries/BOSL2
+          git clone -q --depth 1 --branch v2.0.755 https://github.com/BelfrySCAD/BOSL2.git ~/.local/share/OpenSCAD/libraries/BOSL2
           openscad --version
       - name: Install dependencies
         run: uv sync --extra dev
@@ -34,8 +34,10 @@ jobs:
         # under contention has taken 26x longer than a workstation on the same
         # test, which says nothing about the code. Run them locally.
         run: xvfb-run -a uv run pytest -q -p no:cacheprovider -m "not performance"
-      - name: Lint new modules
-        run: uv run ruff check --select F,E9,B src/openscad_mcp/
+      - name: Lint and check source formatting
+        run: |
+          uv run ruff check src/openscad_mcp/
+          uv run ruff format --check src/openscad_mcp/
 
   windows:
     runs-on: windows-latest

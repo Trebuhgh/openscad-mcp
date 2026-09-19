@@ -243,7 +243,7 @@ def _resolve_density(
     if density_g_cm3 is None:
         known = ", ".join(sorted(MATERIAL_DENSITIES))
         raise ValueError(
-            "one of density_g_cm3, material or mass_g is required " f"(known materials: {known})"
+            f"one of density_g_cm3, material or mass_g is required (known materials: {known})"
         )
     if density_g_cm3 <= 0:
         raise ValueError(f"density_g_cm3 must be positive, got {density_g_cm3}")

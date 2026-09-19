@@ -199,11 +199,11 @@ class Node:
 
     kind: str
     args: dict[Any, Any] = field(default_factory=dict)
-    children: list["Node"] = field(default_factory=list)
+    children: list[Node] = field(default_factory=list)
     transform: Mat4 | None = None
     modifier: str = ""
 
-    def walk(self) -> "list[Node]":
+    def walk(self) -> list[Node]:
         """Return this node and all descendants, depth first."""
         out = [self]
         for child in self.children:
@@ -317,10 +317,10 @@ def parse_args(text: str) -> dict[Any, Any]:
 
 
 def _vec3(value: Any, default: float = 0.0) -> Vec3:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, int | float) and not isinstance(value, bool):
         return (float(value), float(value), float(value))
-    if isinstance(value, (list, tuple)):
-        nums = [float(x) if isinstance(x, (int, float)) else default for x in value[:3]]
+    if isinstance(value, list | tuple):
+        nums = [float(x) if isinstance(x, int | float) else default for x in value[:3]]
         while len(nums) < 3:
             nums.append(default)
         return (nums[0], nums[1], nums[2])
@@ -336,7 +336,7 @@ def _arg(args: dict[Any, Any], *names: Any, default: Any = None) -> Any:
 
 def _maybe_num(value: Any, default: float | None = None) -> float | None:
     """Return ``value`` as a float, or ``default`` if it is not a number."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, int | float):
         return default
     return float(value)
 
@@ -355,7 +355,7 @@ def _local_transform(kind: str, args: dict[Any, Any]) -> Mat4 | None:
             return IDENTITY
         rows: list[tuple[float, ...]] = []
         for row in raw[:4]:
-            values = [float(x) if isinstance(x, (int, float)) else 0.0 for x in row[:4]]
+            values = [float(x) if isinstance(x, int | float) else 0.0 for x in row[:4]]
             while len(values) < 4:
                 values.append(1.0 if len(values) == len(rows) else 0.0)
             rows.append(tuple(values))
@@ -373,7 +373,7 @@ def _local_transform(kind: str, args: dict[Any, Any]) -> Mat4 | None:
         axis = _arg(args, "v", 1)
         if isinstance(angle, list):
             return _rotation_xyz(_vec3(angle))
-        value = float(angle) if isinstance(angle, (int, float)) else 0.0
+        value = float(angle) if isinstance(angle, int | float) else 0.0
         if axis is not None:
             return _rotation_axis(_vec3(axis), value)
         return _rotation_axis((0.0, 0.0, 1.0), value)
@@ -834,8 +834,7 @@ def extract_from_scad(
         )
         if proc.returncode != 0 or not out.exists():
             raise RuntimeError(
-                f"openscad csg export failed (exit {proc.returncode}): "
-                f"{proc.stderr.strip()[:800]}"
+                f"openscad csg export failed (exit {proc.returncode}): {proc.stderr.strip()[:800]}"
             )
         return extract_features(out.read_text(), mask_hull=mask_hull, stub_ratio=stub_ratio)
 
@@ -1134,7 +1133,7 @@ def fit_candidates(d_mm: float, tolerance_mm: float = 0.15, limit: int = 3) -> l
         name = row["name"]
         for label, key, role in _FASTENER_ROLES:
             value = row.get(key)
-            if not isinstance(value, (int, float)):
+            if not isinstance(value, int | float):
                 continue
             delta = d_mm - float(value)
             if abs(delta) <= tolerance_mm:
@@ -1149,7 +1148,7 @@ def fit_candidates(d_mm: float, tolerance_mm: float = 0.15, limit: int = 3) -> l
     bores: list[tuple[str, float]] = list(_SHAFTS)
     for row in _reference_lookup("bearings"):
         od = row.get("outer_diameter_mm")
-        if isinstance(od, (int, float)):
+        if isinstance(od, int | float):
             bores.append((f"{row['name']} bearing pocket", float(od)))
     for label, nominal in bores:
         delta = d_mm - nominal

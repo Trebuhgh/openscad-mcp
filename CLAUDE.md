@@ -124,8 +124,8 @@ All of this is conditional on `config.security.allowed_paths` being set (default
 - Tools accept a bare base64 string from a mocked `render_scad_to_png` (`_as_render_result`), so older mocks keep working
 - **FunctionTool pattern**: on fastmcp 2.x `@mcp.tool()` wraps functions as `FunctionTool` objects (coroutine behind `.fn`); on fastmcp 4.x it returns the bare function. In tests use `render_fn = render.fn if hasattr(render, "fn") else render`; inside `server.py` call other tools through `_tool_fn(tool)(...)`, never `tool.fn(...)`.
 - **Caching in tests**: When testing `render_scad_to_png` command construction, disable caching in the config to prevent cache hits from skipping subprocess calls
-- ~1,500 tests. Markers that actually select something: `unit`, `config`, `integration`, `slow`, `performance`, `edge`, `render`. They are declared in the root `pytest.ini` and topped up by `pytest_configure` in `tests/conftest.py`; `--strict-markers` is on, so a new marker needs declaring in one of those two places
-- Tests that need the real binary skip when OpenSCAD is absent. CI installs OpenSCAD 2021.01 and BOSL2 and runs under `xvfb-run` (PNG export on 2021.01 needs a display). CI runs `-m "not performance"`: the wall-clock benchmarks are for developer machines (their bounds scale by `PERF_SLACK` from `tests/conftest.py` under coverage tracing or `CI`), and a shared runner under contention has taken 26x longer than a workstation on the same test
+- ~1,500 tests. Markers that actually select something: `unit`, `config`, `integration`, `slow`, `performance`, `edge`, `render`. They are declared in `pyproject.toml` and topped up by `pytest_configure` in `tests/conftest.py`; `--strict-markers` is on, so a new marker needs declaring in one of those two places
+- Tests that need the real binary skip when OpenSCAD is absent. CI installs OpenSCAD 2021.01 and pinned BOSL2 v2.0.755 and runs under `xvfb-run` (PNG export on 2021.01 needs a display). CI runs `-m "not performance"`: the wall-clock benchmarks are for developer machines (their bounds scale by `PERF_SLACK` from `tests/conftest.py` under coverage tracing or `CI`), and a shared runner under contention has taken 26x longer than a workstation on the same test
 
 ## Key Design Decisions
 
@@ -147,8 +147,8 @@ All of this is conditional on `config.security.allowed_paths` being set (default
 - **Ruff**: line-length 100, Python 3.10 target, rules: E, W, F, I, B, C4, UP, ARG, SIM
 - **Black**: line-length 100
 - **Mypy**: Python 3.10, `ignore_missing_imports = true`
-- **Coverage**: 80% minimum (`--cov-fail-under=80` in the root `pytest.ini`, which is the config pytest picks up from the repo root)
-- **Lint debt**: `ruff check src/ tests/` reports ~1,260 pre-existing findings (style rules) and `black --check` wants to reformat 18 files. CI gates on `ruff check --select F,E9,B src/openscad_mcp/`, which is clean and must stay clean. Write new code clean; do not reformat the tree wholesale in an unrelated change
+- **Coverage**: 80% minimum, configured centrally in `pyproject.toml`
+- **Lint debt**: the full Ruff configuration is clean and enforced for `src/openscad_mcp/`; tests and the remaining mypy findings are separate follow-up work
 
 ## Conventions
 

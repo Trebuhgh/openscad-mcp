@@ -4,6 +4,7 @@ Main FastMCP server implementation for OpenSCAD rendering.
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -16,9 +17,10 @@ import subprocess
 import tempfile
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any
 
 from fastmcp import Context, FastMCP
 from fastmcp.utilities.types import Image as MCPImage
@@ -110,8 +112,8 @@ _VERSION_RE = re.compile(r"OpenSCAD version (\S+)")
 # Memoised discovery. OpenSCAD is probed once per configured path; every
 # render used to re-exec ``openscad --version`` before even checking the
 # cache.
-_openscad_cache: Dict[str, Optional[str]] = {}
-_capability_cache: Dict[str, Dict[str, Any]] = {}
+_openscad_cache: dict[str, str | None] = {}
+_capability_cache: dict[str, dict[str, Any]] = {}
 
 
 def _reset_openscad_cache() -> None:
@@ -120,7 +122,7 @@ def _reset_openscad_cache() -> None:
     _capability_cache.clear()
 
 
-def _probe_version(path: str) -> Optional[str]:
+def _probe_version(path: str) -> str | None:
     """Return the version string printed by ``openscad --version``, or None.
 
     2021.01 prints it on stderr; newer builds print on stdout. Both are read.
@@ -148,11 +150,11 @@ def _probe_version(path: str) -> Optional[str]:
     return stripped.splitlines()[0] if stripped else None
 
 
-def _version_tuple(version: Optional[str]) -> Tuple[int, ...]:
+def _version_tuple(version: str | None) -> tuple[int, ...]:
     """Sortable tuple from strings like ``2021.01`` or ``2025.08.17``."""
     if not version:
         return (0,)
-    parts: List[int] = []
+    parts: list[int] = []
     for piece in re.split(r"[.\-]", version):
         m = re.match(r"\d+", piece)
         if not m:
@@ -161,7 +163,7 @@ def _version_tuple(version: Optional[str]) -> Tuple[int, ...]:
     return tuple(parts) if parts else (0,)
 
 
-def find_openscad() -> Optional[str]:
+def find_openscad() -> str | None:
     """Locate the OpenSCAD executable.
 
     Order: the configured ``openscad_path`` (or ``OPENSCAD_PATH``), then
@@ -174,21 +176,21 @@ def find_openscad() -> Optional[str]:
     if configured in _openscad_cache:
         return _openscad_cache[configured]
 
-    found: Optional[str] = None
+    found: str | None = None
     if configured and Path(configured).exists():
         found = configured
     else:
         # Every candidate is probed by executing it: names via PATH lookup by
         # the OS, fixed locations only if present. Among the ones that run,
         # the newest version wins; ties keep list order.
-        probed: List[Tuple[str, Optional[str]]] = []
+        probed: list[tuple[str, str | None]] = []
         for name in _OPENSCAD_NAMES:
             probed.append((name, _probe_version(name)))
         for common in _OPENSCAD_COMMON_PATHS:
             if Path(common).exists():
                 probed.append((common, _probe_version(common)))
 
-        best: Optional[Tuple[Tuple[int, ...], int, str]] = None
+        best: tuple[tuple[int, ...], int, str] | None = None
         for idx, (cand, version) in enumerate(probed):
             if version is None:
                 continue
@@ -208,7 +210,7 @@ def find_openscad() -> Optional[str]:
     return found
 
 
-def get_openscad_capabilities(path: Optional[str] = None) -> Dict[str, Any]:
+def get_openscad_capabilities(path: str | None = None) -> dict[str, Any]:
     """Return a cached capability record for the OpenSCAD binary.
 
     The record is probed once per binary path and reused by every tool, so
@@ -226,7 +228,7 @@ def get_openscad_capabilities(path: Optional[str] = None) -> Dict[str, Any]:
     version = (cached or {}).get("version") or _probe_version(path)
     vt = _version_tuple(version)
     is_snapshot = bool(version) and (len(vt) >= 3 or "git" in (version or ""))
-    record: Dict[str, Any] = {
+    record: dict[str, Any] = {
         "installed": True,
         "path": str(path),
         "version": version,
@@ -247,10 +249,10 @@ def get_openscad_capabilities(path: Optional[str] = None) -> Dict[str, Any]:
 # Subprocess execution
 # ============================================================================
 
-_memory_limit_checked: Dict[str, bool] = {}
+_memory_limit_checked: dict[str, bool] = {}
 
 
-def _wrap_with_memory_limit(cmd: List[str]) -> List[str]:
+def _wrap_with_memory_limit(cmd: list[str]) -> list[str]:
     """Prefix *cmd* with a POSIX shell that applies RLIMIT_AS, then execs.
 
     ``preexec_fn`` is avoided deliberately: this is a multi-threaded async
@@ -291,8 +293,8 @@ def _wrap_with_memory_limit(cmd: List[str]) -> List[str]:
 
 
 def _run_openscad(
-    cmd: List[str],
-    include_paths: Optional[List[str]] = None,
+    cmd: list[str],
+    include_paths: list[str] | None = None,
     label: str = "rendering",
 ) -> subprocess.CompletedProcess:
     """Run one OpenSCAD command with the configured limits.
@@ -335,8 +337,8 @@ def _run_openscad(
 
 
 def _openscad_env(
-    include_paths: Optional[List[str]] = None,
-) -> Optional[Dict[str, str]]:
+    include_paths: list[str] | None = None,
+) -> dict[str, str] | None:
     """
     Build the environment for an OpenSCAD subprocess, honouring include paths.
 
@@ -360,9 +362,9 @@ def _openscad_env(
     return env
 
 
-def _format_variables(variables: Optional[Dict[str, Any]]) -> List[str]:
+def _format_variables(variables: dict[str, Any] | None) -> list[str]:
     """Turn a variables dict into ``-D name=value`` argv pairs."""
-    args: List[str] = []
+    args: list[str] = []
     if not variables:
         return args
     for key, value in variables.items():
@@ -381,7 +383,7 @@ def _format_variables(variables: Optional[Dict[str, Any]]) -> List[str]:
 # ============================================================================
 
 
-def _is_within(resolved: Union[str, Path], allowed_root: Union[str, Path]) -> bool:
+def _is_within(resolved: str | Path, allowed_root: str | Path) -> bool:
     """
     Report whether *resolved* lies inside *allowed_root*.
 
@@ -395,35 +397,39 @@ def _is_within(resolved: Union[str, Path], allowed_root: Union[str, Path]) -> bo
     used to step outside the root either.
     """
     try:
-        return Path(resolved).resolve().is_relative_to(
-            Path(allowed_root).resolve()
-        )
+        return Path(resolved).resolve().is_relative_to(Path(allowed_root).resolve())
     except (OSError, ValueError):
         # An unresolvable or malformed root can never contain anything.
         return False
 
 
-def _library_search_paths() -> List[Path]:
+def _library_search_paths() -> list[Path]:
     """Standard OpenSCAD library directories for this platform plus OPENSCADPATH."""
-    search_paths: List[Path] = []
+    search_paths: list[Path] = []
     system = platform.system()
     home = Path.home()
     if system == "Linux":
-        search_paths.extend([
-            home / ".local" / "share" / "OpenSCAD" / "libraries",
-            Path("/usr/share/openscad/libraries"),
-            Path("/usr/share/openscad-nightly/libraries"),
-            Path("/usr/local/share/openscad/libraries"),
-        ])
+        search_paths.extend(
+            [
+                home / ".local" / "share" / "OpenSCAD" / "libraries",
+                Path("/usr/share/openscad/libraries"),
+                Path("/usr/share/openscad-nightly/libraries"),
+                Path("/usr/local/share/openscad/libraries"),
+            ]
+        )
     elif system == "Darwin":
-        search_paths.extend([
-            home / "Documents" / "OpenSCAD" / "libraries",
-            home / "Library" / "Application Support" / "OpenSCAD" / "libraries",
-        ])
+        search_paths.extend(
+            [
+                home / "Documents" / "OpenSCAD" / "libraries",
+                home / "Library" / "Application Support" / "OpenSCAD" / "libraries",
+            ]
+        )
     elif system == "Windows":
-        search_paths.extend([
-            home / "Documents" / "OpenSCAD" / "libraries",
-        ])
+        search_paths.extend(
+            [
+                home / "Documents" / "OpenSCAD" / "libraries",
+            ]
+        )
     openscad_env = os.environ.get("OPENSCADPATH")
     if openscad_env:
         for p in openscad_env.split(os.pathsep):
@@ -434,7 +440,7 @@ def _library_search_paths() -> List[Path]:
     return search_paths
 
 
-def _check_allowed_path(path: Union[str, Path], what: str) -> None:
+def _check_allowed_path(path: str | Path, what: str) -> None:
     """Raise ValueError unless *path* is inside a configured allowed root."""
     config = get_config()
     if not config.security.allowed_paths:
@@ -448,7 +454,7 @@ def _check_allowed_path(path: Union[str, Path], what: str) -> None:
         )
 
 
-def _validate_include_paths(include_paths: Optional[List[str]]) -> None:
+def _validate_include_paths(include_paths: list[str] | None) -> None:
     """Validate every caller-supplied include directory against allowed_paths."""
     if not include_paths:
         return
@@ -456,7 +462,7 @@ def _validate_include_paths(include_paths: Optional[List[str]]) -> None:
         _check_allowed_path(inc_path, "Include path")
 
 
-def _validate_source_size(scad_content: Optional[str]) -> None:
+def _validate_source_size(scad_content: str | None) -> None:
     if not scad_content:
         return
     config = get_config()
@@ -468,7 +474,7 @@ def _validate_source_size(scad_content: Optional[str]) -> None:
         )
 
 
-def _validate_variable_names(variables: Optional[Dict[str, Any]]) -> None:
+def _validate_variable_names(variables: dict[str, Any] | None) -> None:
     if not variables:
         return
     for key in variables:
@@ -479,9 +485,9 @@ def _validate_variable_names(variables: Optional[Dict[str, Any]]) -> None:
 
 
 def _check_dependency_closure(
-    deps: List[str],
+    deps: list[str],
     scad_path: Path,
-    include_paths: Optional[List[str]] = None,
+    include_paths: list[str] | None = None,
 ) -> None:
     """Enforce ``allowed_paths`` on every file OpenSCAD actually read.
 
@@ -498,12 +504,12 @@ def _check_dependency_closure(
     config = get_config()
     if not config.security.allowed_paths:
         return
-    roots: List[Path] = [Path(p) for p in config.security.allowed_paths]
+    roots: list[Path] = [Path(p) for p in config.security.allowed_paths]
     roots.extend(_library_search_paths())
     roots.extend(Path(p) for p in (include_paths or []))
     roots.append(Path(config.temp_dir))
     scad_dir = scad_path.parent
-    offenders: List[str] = []
+    offenders: list[str] = []
     for dep in deps:
         dep_path = Path(dep)
         if not dep_path.is_absolute():
@@ -531,17 +537,17 @@ def _hash_field(hasher: "hashlib._Hash", value: Any) -> None:
 
 
 def _compute_render_cache_key(
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
-    camera_position: Optional[List[float]] = None,
-    camera_target: Optional[List[float]] = None,
-    camera_up: Optional[List[float]] = None,
-    image_size: Optional[List[int]] = None,
+    scad_content: str | None = None,
+    scad_file: str | None = None,
+    camera_position: list[float] | None = None,
+    camera_target: list[float] | None = None,
+    camera_up: list[float] | None = None,
+    image_size: list[int] | None = None,
     color_scheme: str = "Cornfield",
-    variables: Optional[Dict[str, Any]] = None,
+    variables: dict[str, Any] | None = None,
     auto_center: bool = False,
-    include_paths: Optional[List[str]] = None,
-    binary_identity: Optional[str] = None,
+    include_paths: list[str] | None = None,
+    binary_identity: str | None = None,
 ) -> str:
     """Compute a SHA-256 cache key from all rendering parameters.
 
@@ -601,12 +607,12 @@ def _manifest_path(cache_key: str) -> Path:
     return get_config().cache.directory / f"{cache_key}.json"
 
 
-def _file_fingerprint(path: Path, with_hash: bool = True) -> Optional[Dict[str, Any]]:
+def _file_fingerprint(path: Path, with_hash: bool = True) -> dict[str, Any] | None:
     try:
         st = path.stat()
     except OSError:
         return None
-    entry: Dict[str, Any] = {
+    entry: dict[str, Any] = {
         "path": str(path),
         "size": st.st_size,
         "mtime_ns": st.st_mtime_ns,
@@ -620,12 +626,12 @@ def _file_fingerprint(path: Path, with_hash: bool = True) -> Optional[Dict[str, 
 
 
 def _build_cache_manifest(
-    deps: List[str],
+    deps: list[str],
     scad_dir: Path,
-    missing_includes: List[str],
+    missing_includes: list[str],
     diagnostics: Diagnostics,
-    exclude: Optional[List[Path]] = None,
-) -> Dict[str, Any]:
+    exclude: list[Path] | None = None,
+) -> dict[str, Any]:
     """Record every file the render depended on, with size/mtime/sha256.
 
     *exclude* lists files already covered by the cache key (the top-level
@@ -633,7 +639,7 @@ def _build_cache_manifest(
     lookup time).
     """
     excluded = {p.resolve() for p in (exclude or [])}
-    entries: List[Dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     for dep in deps:
         p = Path(dep)
         if not p.is_absolute():
@@ -656,9 +662,7 @@ def _build_cache_manifest(
     }
 
 
-def _manifest_is_current(
-    manifest: Dict[str, Any], include_paths: Optional[List[str]]
-) -> bool:
+def _manifest_is_current(manifest: dict[str, Any], include_paths: list[str] | None) -> bool:
     """True if every recorded dependency is unchanged and no missing include appeared."""
     for entry in manifest.get("dependencies", []):
         p = Path(entry["path"])
@@ -672,7 +676,7 @@ def _manifest_is_current(
 
     # Negative dependencies: includes that could not be opened at render
     # time. If one exists now, the cached image was built without it.
-    search_dirs: List[Path] = [Path(manifest.get("scad_dir", "."))]
+    search_dirs: list[Path] = [Path(manifest.get("scad_dir", "."))]
     search_dirs.extend(Path(p) for p in (include_paths or []))
     search_dirs.extend(_library_search_paths())
     for name in manifest.get("unresolved_includes", []):
@@ -683,8 +687,8 @@ def _manifest_is_current(
 
 
 def _check_cache(
-    cache_key: str, include_paths: Optional[List[str]] = None
-) -> Optional[Tuple[str, Dict[str, Any]]]:
+    cache_key: str, include_paths: list[str] | None = None
+) -> tuple[str, dict[str, Any]] | None:
     """Return ``(base64 PNG, manifest)`` on a validated hit, else None.
 
     A hit requires the PNG, a manifest, an unexpired TTL, and every
@@ -729,14 +733,12 @@ def _check_cache(
 def _remove_cache_entry(cache_key: str) -> None:
     config = get_config()
     for suffix in (".png", ".json"):
-        try:
+        with contextlib.suppress(OSError):
             (config.cache.directory / f"{cache_key}{suffix}").unlink()
-        except OSError:
-            pass
 
 
 def _save_to_cache(
-    cache_key: str, image_data: bytes, manifest: Optional[Dict[str, Any]] = None
+    cache_key: str, image_data: bytes, manifest: dict[str, Any] | None = None
 ) -> None:
     """Save raw PNG bytes plus the dependency manifest, evicting if needed.
 
@@ -753,7 +755,9 @@ def _save_to_cache(
     cache_file = config.cache.directory / f"{cache_key}.png"
 
     try:
-        _manifest_path(cache_key).write_text(json.dumps(manifest or {"version": 1, "dependencies": []}))
+        _manifest_path(cache_key).write_text(
+            json.dumps(manifest or {"version": 1, "dependencies": []})
+        )
         cache_file.write_bytes(image_data)
     except OSError as exc:
         logger.warning("Failed to write render cache entry: %s", exc)
@@ -783,8 +787,8 @@ def _evict_cache_if_needed() -> None:
     max_bytes = config.cache.max_size_mb * 1024 * 1024
 
     # Group files by (directory, stem); each group is one cache entry.
-    entries: Dict[Tuple[Path, str], List[Tuple[Path, int]]] = {}
-    newest: Dict[Tuple[Path, str], float] = {}
+    entries: dict[tuple[Path, str], list[tuple[Path, int]]] = {}
+    newest: dict[tuple[Path, str], float] = {}
     total_size = 0
     candidates = list(cache_dir.glob("*.png")) + list(cache_dir.glob("*.json"))
     parts_dir = cache_dir / "parts"
@@ -825,16 +829,16 @@ class RenderResult:
     """Outcome of one PNG render: the image plus everything OpenSCAD said."""
 
     image_b64: str
-    diagnostics: Optional[Diagnostics] = None
+    diagnostics: Diagnostics | None = None
     cached: bool = False
-    dependencies: List[str] = field(default_factory=list)
-    unresolved_includes: List[str] = field(default_factory=list)
-    cache_key: Optional[str] = None
-    image_size: Optional[List[int]] = None
+    dependencies: list[str] = field(default_factory=list)
+    unresolved_includes: list[str] = field(default_factory=list)
+    cache_key: str | None = None
+    image_size: list[int] | None = None
 
-    def metadata(self) -> Dict[str, Any]:
+    def metadata(self) -> dict[str, Any]:
         """JSON-safe summary for tool responses."""
-        d: Dict[str, Any] = {"cached": self.cached}
+        d: dict[str, Any] = {"cached": self.cached}
         if self.diagnostics is not None:
             d.update(self.diagnostics.to_dict(include_records=False))
         if self.unresolved_includes:
@@ -852,7 +856,7 @@ def _as_render_result(value: Any) -> RenderResult:
     return RenderResult(image_b64=str(value))
 
 
-def _clamp_image_size(image_size: List[int]) -> List[int]:
+def _clamp_image_size(image_size: list[int]) -> list[int]:
     """Clamp to configured maxima, preserving aspect ratio."""
     config = get_config()
     max_w = config.rendering.max_image_width
@@ -868,17 +872,17 @@ def _clamp_image_size(image_size: List[int]) -> List[int]:
 
 
 def render_scad_to_png(
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
-    camera_position: Optional[List[float]] = None,
-    camera_target: Optional[List[float]] = None,
-    camera_up: Optional[List[float]] = None,
-    image_size: Optional[List[int]] = None,
+    scad_content: str | None = None,
+    scad_file: str | None = None,
+    camera_position: list[float] | None = None,
+    camera_target: list[float] | None = None,
+    camera_up: list[float] | None = None,
+    image_size: list[int] | None = None,
     color_scheme: str = "Cornfield",
-    variables: Optional[Dict[str, Any]] = None,
+    variables: dict[str, Any] | None = None,
     auto_center: bool = False,
-    include_paths: Optional[List[str]] = None,
-    projection: Optional[str] = None,
+    include_paths: list[str] | None = None,
+    projection: str | None = None,
 ) -> RenderResult:
     """
     Render OpenSCAD code or file to PNG.
@@ -982,7 +986,7 @@ def render_scad_to_png(
         temp_path = Path(temp_dir)
 
         # Handle input source
-        inline_path: Optional[str] = None
+        inline_path: str | None = None
         if scad_content:
             scad_path = temp_path / "input.scad"
             scad_path.write_text(scad_content, encoding="utf-8")
@@ -1003,10 +1007,14 @@ def render_scad_to_png(
         if config.rendering.hard_warnings:
             cmd.append("--hardwarnings")
         cmd += [
-            "-o", str(output_path),
-            "-d", str(deps_path),
-            "--imgsize", f"{image_size[0]},{image_size[1]}",
-            "--colorscheme", color_scheme,
+            "-o",
+            str(output_path),
+            "-d",
+            str(deps_path),
+            "--imgsize",
+            f"{image_size[0]},{image_size[1]}",
+            "--colorscheme",
+            color_scheme,
         ]
 
         # Add camera parameters (eye + center, 6-value format)
@@ -1035,7 +1043,7 @@ def render_scad_to_png(
         diag = parse_openscad_output(result.stderr or "", result.returncode, inline_path)
 
         # Dependency closure: what OpenSCAD actually read
-        deps: List[str] = []
+        deps: list[str] = []
         if deps_path.exists():
             try:
                 deps = parse_deps_file(deps_path.read_text(encoding="utf-8-sig", errors="replace"))
@@ -1061,10 +1069,7 @@ def render_scad_to_png(
         # image may reflect either version of the file.
         scad_dir = scad_path.parent
         manifest = _build_cache_manifest(deps, scad_dir, missing, diag, exclude=[scad_path])
-        race = any(
-            (e.get("mtime_ns", 0) / 1e9) >= render_start
-            for e in manifest["dependencies"]
-        )
+        race = any((e.get("mtime_ns", 0) / 1e9) >= render_start for e in manifest["dependencies"])
         if not race:
             _save_to_cache(cache_key, image_data, manifest)
 
@@ -1084,10 +1089,12 @@ def render_scad_to_png(
 # ============================================================================
 
 
-def parse_camera_param(param: Union[str, List[float], Dict[str, float], None], default: List[float]) -> List[float]:
+def parse_camera_param(
+    param: str | list[float] | dict[str, float] | None, default: list[float]
+) -> list[float]:
     """
     Parse camera parameters from various input formats.
-    
+
     Accepts:
     - List of floats: [x, y, z]
     - JSON string: "[x, y, z]" or '{"x": x, "y": y, "z": z}'
@@ -1096,21 +1103,21 @@ def parse_camera_param(param: Union[str, List[float], Dict[str, float], None], d
     """
     if param is None:
         return default
-    
+
     # If it's already a list, return it
     if isinstance(param, list):
         if len(param) == 3:
             return [float(v) for v in param]
         else:
             raise ValueError(f"Expected 3 values for camera parameter, got {len(param)}")
-    
+
     # If it's a dict with x, y, z keys
     if isinstance(param, dict):
         if "x" in param and "y" in param and "z" in param:
             return [float(param["x"]), float(param["y"]), float(param["z"])]
         else:
             raise ValueError(f"Dict must have x, y, z keys, got {param.keys()}")
-    
+
     # If it's a string, try to parse as JSON
     if isinstance(param, str):
         try:
@@ -1123,34 +1130,34 @@ def parse_camera_param(param: Union[str, List[float], Dict[str, float], None], d
                 raise ValueError("Parsed value must be a list of 3 numbers or dict with x,y,z keys")
         except (json.JSONDecodeError, ValueError) as e:
             raise ValueError(f"Cannot parse '{param}' as camera parameter: {e}") from e
-    
+
     raise ValueError(f"Unexpected type for camera parameter: {type(param)}")
 
 
-def parse_list_param(param: Union[str, List[Any], None], default: List[Any]) -> List[Any]:
+def parse_list_param(param: str | list[Any] | None, default: list[Any]) -> list[Any]:
     """
     Parse flexible list parameters from various input formats.
-    
+
     Handles:
     - JSON arrays: '["front", "top"]'
     - CSV strings: "front,top"
     - Python lists: ["front", "top"]
     - None: returns default
-    
+
     Args:
         param: Input parameter in various formats
         default: Default value if param is None
-    
+
     Returns:
         Parsed list
     """
     if param is None:
         return default
-    
+
     # Already a list
     if isinstance(param, list):
         return param
-    
+
     # String input - try various formats
     if isinstance(param, str):
         param = param.strip()
@@ -1160,7 +1167,7 @@ def parse_list_param(param: Union[str, List[Any], None], default: List[Any]) -> 
             return default
 
         # Try JSON parsing first
-        if param.startswith('['):
+        if param.startswith("["):
             try:
                 parsed = json.loads(param)
                 if isinstance(parsed, list):
@@ -1169,41 +1176,41 @@ def parse_list_param(param: Union[str, List[Any], None], default: List[Any]) -> 
                     raise ValueError(f"JSON parsed to {type(parsed)}, expected list")
             except json.JSONDecodeError:
                 pass
-        
+
         # Try CSV format
-        if ',' in param:
-            return [item.strip() for item in param.split(',') if item.strip()]
-        
+        if "," in param:
+            return [item.strip() for item in param.split(",") if item.strip()]
+
         # Single value
         return [param]
-    
+
     raise ValueError(f"Cannot parse list from type {type(param)}")
 
 
-def parse_dict_param(param: Union[str, Dict[str, Any], None], default: Dict[str, Any]) -> Dict[str, Any]:
+def parse_dict_param(param: str | dict[str, Any] | None, default: dict[str, Any]) -> dict[str, Any]:
     """
     Parse flexible dict parameters from various input formats.
-    
+
     Handles:
     - JSON objects: '{"x": 10, "y": 20}'
     - Key=value strings: "x=10,y=20"
     - Python dicts: {"x": 10}
     - None: returns default
-    
+
     Args:
         param: Input parameter in various formats
         default: Default value if param is None
-    
+
     Returns:
         Parsed dictionary
     """
     if param is None:
         return default
-    
+
     # Already a dict
     if isinstance(param, dict):
         return param
-    
+
     # String input - try various formats
     if isinstance(param, str):
         param = param.strip()
@@ -1213,7 +1220,7 @@ def parse_dict_param(param: Union[str, Dict[str, Any], None], default: Dict[str,
             return default
 
         # Try JSON parsing first
-        if param.startswith('{'):
+        if param.startswith("{"):
             try:
                 parsed = json.loads(param)
                 if isinstance(parsed, dict):
@@ -1222,110 +1229,111 @@ def parse_dict_param(param: Union[str, Dict[str, Any], None], default: Dict[str,
                     raise ValueError(f"JSON parsed to {type(parsed)}, expected dict")
             except json.JSONDecodeError:
                 pass
-        
+
         # Try key=value format
-        if '=' in param:
+        if "=" in param:
             result = {}
-            pairs = param.split(',')
+            pairs = param.split(",")
             for pair in pairs:
                 pair = pair.strip()
-                if '=' in pair:
-                    key, value = pair.split('=', 1)
+                if "=" in pair:
+                    key, value = pair.split("=", 1)
                     key = key.strip()
                     value = value.strip()
-                    
+
                     # Try to parse the value as number or boolean
                     try:
                         # Try integer first
-                        if '.' not in value:
+                        if "." not in value:
                             result[key] = int(value)
                         else:
                             result[key] = float(value)
                     except ValueError:
                         # Check for boolean
-                        if value.lower() == 'true':
+                        if value.lower() == "true":
                             result[key] = True
-                        elif value.lower() == 'false':
+                        elif value.lower() == "false":
                             result[key] = False
                         else:
                             # Keep as string
                             result[key] = value
             return result
-    
+
     raise ValueError(f"Cannot parse dict from type {type(param)}")
 
 
-def parse_image_size_param(param: Union[List[int], str, tuple, None], default: List[int]) -> List[int]:
+def parse_image_size_param(param: list[int] | str | tuple | None, default: list[int]) -> list[int]:
     """
     Parse flexible image size parameters from various input formats.
-    
+
     Handles:
     - List format: [800, 600]
     - String format: "800x600" or "800,600"
     - Tuple format: (800, 600)
     - None: returns default
-    
+
     Args:
         param: Input parameter in various formats
         default: Default value if param is None
-    
+
     Returns:
         List of two integers [width, height]
     """
     if param is None:
         return default
-    
+
     # Already a list
     if isinstance(param, list):
         if len(param) == 2:
             return [int(param[0]), int(param[1])]
         else:
             raise ValueError(f"Image size must have 2 values, got {len(param)}")
-    
+
     # Tuple format
     if isinstance(param, tuple):
         if len(param) == 2:
             return [int(param[0]), int(param[1])]
         else:
             raise ValueError(f"Image size must have 2 values, got {len(param)}")
-    
+
     # String format
     if isinstance(param, str):
         param = param.strip()
-        
+
         # Try JSON format first (handles "[1200, 900]")
-        if param.startswith('['):
+        if param.startswith("["):
             try:
                 parsed = json.loads(param)
                 if isinstance(parsed, list) and len(parsed) == 2:
                     return [int(parsed[0]), int(parsed[1])]
             except (json.JSONDecodeError, ValueError):
                 pass
-        
+
         # Try "800x600" format
-        if 'x' in param:
-            parts = param.split('x')
+        if "x" in param:
+            parts = param.split("x")
             if len(parts) == 2:
                 return [int(parts[0].strip()), int(parts[1].strip())]
-        
+
         # Try "800,600" format (only if not JSON-like)
-        if ',' in param and not param.startswith('['):
-            parts = param.split(',')
+        if "," in param and not param.startswith("["):
+            parts = param.split(",")
             if len(parts) == 2:
                 return [int(parts[0].strip()), int(parts[1].strip())]
-    
+
     raise ValueError(f"Cannot parse image size from {param}")
+
 
 def estimate_response_size(data: Any) -> int:
     """
     Estimate the token size of response data.
-    
-    Uses a rough approximation of 4 characters per token, which is a 
+
+    Uses a rough approximation of 4 characters per token, which is a
     conservative estimate for base64-encoded data and JSON structures.
-    
+
     Args:
         data: Any JSON-serializable data structure
-        
+
     Returns:
         Estimated size in tokens
     """
@@ -1337,18 +1345,18 @@ def estimate_response_size(data: Any) -> int:
 def save_image_to_file(base64_data: str, filename: str, output_dir: Path) -> str:
     """
     Save base64 image to file and return path.
-    
+
     Decodes base64 image data and saves it to a file in the specified directory.
     Creates the directory if it doesn't exist.
-    
+
     Args:
         base64_data: Base64-encoded image data
         filename: Name for the saved file
         output_dir: Directory to save the file in
-        
+
     Returns:
         String path to the saved file
-        
+
     Raises:
         ValueError: If base64 decoding fails
         OSError: If file writing fails
@@ -1357,12 +1365,12 @@ def save_image_to_file(base64_data: str, filename: str, output_dir: Path) -> str
         # Ensure output directory exists
         output_dir.mkdir(parents=True, exist_ok=True)
         file_path = output_dir / filename
-        
+
         # Decode and save
         image_data = base64.b64decode(base64_data)
-        with open(file_path, 'wb') as f:
+        with open(file_path, "wb") as f:
             f.write(image_data)
-        
+
         return str(file_path)
     except Exception as e:
         raise ValueError(f"Failed to save image to file: {e}") from e
@@ -1371,92 +1379,92 @@ def save_image_to_file(base64_data: str, filename: str, output_dir: Path) -> str
 def compress_base64_image(base64_data: str, quality: int = 85, optimize: bool = True) -> str:
     """
     Compress base64 image to reduce size.
-    
+
     Uses PIL/Pillow to decode, compress, and re-encode the image.
     Maintains PNG format but applies compression and optimization.
-    
+
     Args:
         base64_data: Base64-encoded PNG image
         quality: Compression quality (1-100, ignored for PNG optimize)
         optimize: Whether to apply PNG optimization
-        
+
     Returns:
         Compressed base64-encoded image
-        
+
     Raises:
         ValueError: If image processing fails
     """
     import io
-    
+
     try:
         # Decode base64 to image
         image_data = base64.b64decode(base64_data)
         image = PILImage.open(io.BytesIO(image_data))
-        
+
         # Compress using PNG optimization
         buffer = io.BytesIO()
         # For PNG, quality parameter doesn't apply, but optimize does
         # We use compress_level for finer control
         save_kwargs = {
-            'format': 'PNG',
-            'optimize': optimize,
-            'compress_level': 9 if quality < 50 else (6 if quality < 85 else 3)
+            "format": "PNG",
+            "optimize": optimize,
+            "compress_level": 9 if quality < 50 else (6 if quality < 85 else 3),
         }
         image.save(buffer, **save_kwargs)
-        
+
         # Re-encode to base64
         buffer.seek(0)
-        compressed_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        compressed_data = base64.b64encode(buffer.getvalue()).decode("utf-8")
         return compressed_data
     except Exception as e:
         raise ValueError(f"Failed to compress image: {e}") from e
 
 
 def manage_response_size(
-    images: Union[Dict[str, str], List[Dict[str, Any]]], 
+    images: dict[str, str] | list[dict[str, Any]],
     output_format: str = "auto",
-    max_size: int = 25000, 
-    output_dir: Optional[Path] = None,
-    ctx: Optional[Any] = None
-) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+    max_size: int = 25000,
+    output_dir: Path | None = None,
+    ctx: Any | None = None,
+) -> dict[str, Any] | list[dict[str, Any]]:
     """
     Manage response size for multiple images.
-    
+
     Intelligently handles large image responses by either compressing them,
     saving to files, or keeping as base64 based on size constraints.
-    
+
     Args:
         images: Dictionary of name->base64 or list of image dicts with base64 data
         output_format: "auto" | "base64" | "file_path" | "compressed"
         max_size: Maximum response size in tokens (approx 4 chars per token)
         output_dir: Directory to save images when using file_path format
         ctx: Optional context for logging
-        
+
     Returns:
         Modified images dictionary or list with optimized responses
     """
     config = get_config()
-    
+
     # Set default output directory if not provided
     if output_dir is None:
         output_dir = Path(config.temp_dir) / "renders"
-    
+
     # Handle both dict and list inputs
     is_dict = isinstance(images, dict)
-    
+
     if is_dict:
         working_images = [(k, v) for k, v in images.items()]
     else:
         working_images = [(f"image_{i}", img.get("data", img)) for i, img in enumerate(images)]
-    
+
     # Determine output format if auto
     if output_format == "auto":
         # Estimate current size
         current_size = estimate_response_size(images)
-        
+
         if ctx:
             logger.info(f"Estimated response size: {current_size} tokens")
-        
+
         if current_size > max_size:
             # Try compression first
             for _name, data in working_images[:1]:  # Test with first image
@@ -1469,57 +1477,45 @@ def manage_response_size(
                         break
                 except Exception:
                     pass
-            
+
             # If compression isn't enough, use file paths
             if output_format == "auto":
                 output_format = "file_path"
         else:
             output_format = "base64"
-        
+
         if ctx:
             logger.info(f"Selected output format: {output_format}")
-    
+
     # Process images based on format
     result = {}
-    
+
     for name, base64_data in working_images:
         if output_format == "file_path":
             # Save to file and return path
             filename = f"{name}_{uuid.uuid4().hex[:8]}.png"
             file_path = save_image_to_file(base64_data, filename, output_dir)
-            result[name] = {
-                "type": "file_path",
-                "path": file_path,
-                "mime_type": "image/png"
-            }
-            
+            result[name] = {"type": "file_path", "path": file_path, "mime_type": "image/png"}
+
         elif output_format == "compressed":
             # Compress and return base64
             try:
                 compressed_data = compress_base64_image(base64_data)
                 result[name] = {
-                    "type": "base64_compressed", 
+                    "type": "base64_compressed",
                     "data": compressed_data,
                     "mime_type": "image/png",
-                    "compression_ratio": len(compressed_data) / len(base64_data)
+                    "compression_ratio": len(compressed_data) / len(base64_data),
                 }
             except Exception as e:
                 # Fallback to original if compression fails
                 if ctx:
                     logger.warning(f"Compression failed for {name}: {e}")
-                result[name] = {
-                    "type": "base64",
-                    "data": base64_data,
-                    "mime_type": "image/png"
-                }
-                
+                result[name] = {"type": "base64", "data": base64_data, "mime_type": "image/png"}
+
         else:  # base64 format
-            result[name] = {
-                "type": "base64",
-                "data": base64_data,
-                "mime_type": "image/png"
-            }
-    
+            result[name] = {"type": "base64", "data": base64_data, "mime_type": "image/png"}
+
     # Return in original format
     if is_dict:
         # For backwards compatibility, if all are base64, return simple dict
@@ -1528,7 +1524,6 @@ def manage_response_size(
         return result
     else:
         return list(result.values())
-
 
 
 # View presets for common perspectives with distance=200
@@ -1553,7 +1548,7 @@ VIEW_PRESETS = {
 # Allowing $ is safe here: the name is handed to OpenSCAD as a single argv
 # element ("-D", "name=value") with no shell in between, so $ is an ordinary
 # character rather than an expansion. The rest of the name stays constrained.
-VARIABLE_NAME_RE = re.compile(r'^\$?[a-zA-Z_][a-zA-Z0-9_]*$')
+VARIABLE_NAME_RE = re.compile(r"^\$?[a-zA-Z_][a-zA-Z0-9_]*$")
 
 QUALITY_PRESETS = {
     "draft": {"$fn": 8, "$fa": 12, "$fs": 2},
@@ -1565,23 +1560,23 @@ QUALITY_PRESETS = {
 @mcp.tool
 async def check_openscad(
     include_paths: bool = False,
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Verify OpenSCAD installation and return version info.
-    
+
     Args:
         include_paths: Include searched paths in response
         ctx: MCP context for logging
-    
+
     Returns:
         Dict with OpenSCAD installation information
     """
     if ctx:
         await ctx.info("Checking OpenSCAD installation...")
-    
+
     openscad_path = find_openscad()
-    
+
     if not openscad_path:
         searched = list(_OPENSCAD_NAMES) + list(_OPENSCAD_COMMON_PATHS)
         return {
@@ -1598,11 +1593,11 @@ async def check_openscad(
 
     record = get_openscad_capabilities(openscad_path)
     version = record.get("version") or "Unknown"
-    
+
     if ctx:
         await ctx.info(f"Found OpenSCAD {version} at {openscad_path}")
-    
-    response: Dict[str, Any] = {
+
+    response: dict[str, Any] = {
         "success": True,
         "installed": True,
         "version": version,
@@ -1643,7 +1638,7 @@ SUPPORTED_EXPORT_FORMATS = {"stl", "3mf", "amf", "off", "dxf", "svg", "csg", "ne
 _MESH_EXPORT_FORMATS = {"stl", "3mf", "amf", "off", "nef3"}
 
 
-def _supported_export_formats(capabilities: Optional[Dict[str, Any]] = None) -> set:
+def _supported_export_formats(capabilities: dict[str, Any] | None = None) -> set:
     """Export formats for the detected binary (AMF only where it still exists)."""
     formats = set(SUPPORTED_EXPORT_FORMATS)
     if capabilities and capabilities.get("installed") and not capabilities.get("amf_export", True):
@@ -1657,17 +1652,17 @@ class EvalResult:
 
     returncode: int
     diagnostics: Diagnostics
-    dependencies: List[str]
-    output_path: Optional[Path]
+    dependencies: list[str]
+    output_path: Path | None
 
 
 def _evaluate_scad(
-    scad_content: Optional[str],
-    scad_file: Optional[str],
+    scad_content: str | None,
+    scad_file: str | None,
     output_target: str,
-    export_format: Optional[str],
-    variables: Optional[Dict[str, Any]],
-    include_paths: Optional[List[str]],
+    export_format: str | None,
+    variables: dict[str, Any] | None,
+    include_paths: list[str] | None,
     label: str,
     prefix: str,
 ) -> EvalResult:
@@ -1692,8 +1687,8 @@ def _evaluate_scad(
     temp_dir_path = Path(config.temp_dir)
     temp_dir_path.mkdir(parents=True, exist_ok=True)
 
-    inline_path: Optional[str] = None
-    cleanup: List[Path] = []
+    inline_path: str | None = None
+    cleanup: list[Path] = []
     if scad_content:
         tmp_input = temp_dir_path / f"{prefix}_{uuid.uuid4().hex[:8]}.scad"
         tmp_input.write_text(scad_content, encoding="utf-8")
@@ -1720,7 +1715,7 @@ def _evaluate_scad(
     try:
         result = _run_openscad(cmd, include_paths, label=label)
         diag = parse_openscad_output(result.stderr or "", result.returncode, inline_path)
-        deps: List[str] = []
+        deps: list[str] = []
         if deps_path.exists():
             try:
                 deps = parse_deps_file(deps_path.read_text(encoding="utf-8-sig", errors="replace"))
@@ -1732,12 +1727,10 @@ def _evaluate_scad(
             # Withhold everything derived from the run, including any file.
             out = Path(output_target)
             if output_target not in ("/dev/null", "NUL") and out.exists():
-                try:
+                with contextlib.suppress(OSError):
                     out.unlink()
-                except OSError:
-                    pass
             raise
-        out_path: Optional[Path] = None
+        out_path: Path | None = None
         if output_target not in ("/dev/null", "NUL"):
             candidate = Path(output_target)
             out_path = candidate if candidate.exists() else None
@@ -1753,16 +1746,16 @@ def _evaluate_scad(
 
 @mcp.tool()
 async def export_model(
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
+    scad_content: str | None = None,
+    scad_file: str | None = None,
     output_format: str = "stl",
-    output_path: Optional[str] = None,
-    variables: Optional[Dict[str, Any]] = None,
-    include_paths: Optional[List[str]] = None,
-    parts: Optional[List[Dict[str, Any]]] = None,
+    output_path: str | None = None,
+    variables: dict[str, Any] | None = None,
+    include_paths: list[str] | None = None,
+    parts: list[dict[str, Any]] | None = None,
     quality: Any = None,
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Export OpenSCAD code or file to a mesh, 2D, or CSG format. With
     parts=[{name, code, place?}] every part is exported separately (in its
@@ -1793,13 +1786,18 @@ async def export_model(
     try:
         # Validate exactly one input source
         if bool(scad_content) == bool(scad_file):
-            raise ValueError(
-                "Exactly one of scad_content or scad_file must be provided"
-            )
+            raise ValueError("Exactly one of scad_content or scad_file must be provided")
         if parts:
             return await _export_parts_bundle(
-                scad_content, scad_file, output_format, output_path, variables,
-                include_paths, parts, quality, ctx,
+                scad_content,
+                scad_file,
+                output_format,
+                output_path,
+                variables,
+                include_paths,
+                parts,
+                quality,
+                ctx,
             )
 
         # Validate output format against what the detected binary supports
@@ -1844,8 +1842,10 @@ async def export_model(
 
         diag = ev.diagnostics
         if ev.returncode != 0 or ev.output_path is None:
-            detail = "; ".join(diag.errors) if diag.errors else "OpenSCAD did not produce output file"
-            response: Dict[str, Any] = {
+            detail = (
+                "; ".join(diag.errors) if diag.errors else "OpenSCAD did not produce output file"
+            )
+            response: dict[str, Any] = {
                 "success": False,
                 "error": f"OpenSCAD export failed: {detail}",
                 "format": fmt,
@@ -1858,9 +1858,7 @@ async def export_model(
         file_size = ev.output_path.stat().st_size
 
         if ctx:
-            await ctx.info(
-                f"Export complete: {ev.output_path} ({file_size} bytes)"
-            )
+            await ctx.info(f"Export complete: {ev.output_path} ({file_size} bytes)")
 
         response = {
             "success": diag.ok,
@@ -1905,15 +1903,12 @@ def _validate_model_name(name: str) -> str:
     """
     # Reject path traversal
     if ".." in name or "/" in name or "\\" in name:
-        raise ValueError(
-            f"Invalid model name '{name}': must not contain path separators "
-            f"or '..'"
-        )
+        raise ValueError(f"Invalid model name '{name}': must not contain path separators or '..'")
 
     # Strip .scad extension for validation, then re-add
     base = name.removesuffix(".scad")
 
-    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_\-]*$', base):
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_\-]*$", base):
         raise ValueError(
             f"Invalid model name '{name}': must start with alphanumeric and "
             f"contain only alphanumeric, hyphens, and underscores"
@@ -1925,7 +1920,7 @@ def _validate_model_name(name: str) -> str:
     return name
 
 
-def _resolve_workspace(workspace: Optional[str] = None) -> Path:
+def _resolve_workspace(workspace: str | None = None) -> Path:
     """
     Resolve the workspace directory path.
 
@@ -1945,9 +1940,7 @@ def _resolve_workspace(workspace: Optional[str] = None) -> Path:
 
     if workspace:
         if ".." in workspace:
-            raise ValueError(
-                "Workspace path must not contain '..'"
-            )
+            raise ValueError("Workspace path must not contain '..'")
         ws = Path(workspace).resolve()
         _check_allowed_path(ws, "Workspace")
     else:
@@ -1960,12 +1953,12 @@ def _resolve_workspace(workspace: Optional[str] = None) -> Path:
 @mcp.tool()
 async def model(
     action: str,
-    name: Optional[str] = None,
-    content: Optional[str] = None,
-    workspace: Optional[str] = None,
-    template: Optional[str] = None,
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    name: str | None = None,
+    content: str | None = None,
+    workspace: str | None = None,
+    template: str | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Manage .scad files in a workspace: action = "create" | "get" | "update" |
     "list" | "delete". name is the file name (".scad" added); content is the
@@ -1986,12 +1979,14 @@ async def model(
             models = []
             for scad_file in sorted(ws.glob("*.scad")):
                 stat = scad_file.stat()
-                models.append({
-                    "name": scad_file.name,
-                    "path": str(scad_file),
-                    "size_bytes": stat.st_size,
-                    "modified": stat.st_mtime,
-                })
+                models.append(
+                    {
+                        "name": scad_file.name,
+                        "path": str(scad_file),
+                        "size_bytes": stat.st_size,
+                        "modified": stat.st_mtime,
+                    }
+                )
             if ctx:
                 await ctx.info(f"Found {len(models)} model(s) in {ws}")
             return {"success": True, "workspace": str(ws), "models": models, "count": len(models)}
@@ -2023,7 +2018,7 @@ async def model(
             return {"success": True, "name": name, "deleted_path": str(file_path)}
 
         # create / update
-        extra: Dict[str, Any] = {}
+        extra: dict[str, Any] = {}
         if template:
             if action != "create":
                 raise ValueError("template is only valid with action='create'")
@@ -2046,13 +2041,9 @@ async def model(
         if content is None:
             raise ValueError(f"action '{action}' needs content")
         if action == "create" and file_path.exists():
-            raise ValueError(
-                f"Model '{name}' already exists at {file_path}; use action='update'"
-            )
+            raise ValueError(f"Model '{name}' already exists at {file_path}; use action='update'")
         if action == "update" and not file_path.exists():
-            raise FileNotFoundError(
-                f"Model '{name}' not found at {file_path}; use action='create'"
-            )
+            raise FileNotFoundError(f"Model '{name}' not found at {file_path}; use action='create'")
         file_path.write_text(content, encoding="utf-8")
         if ctx:
             await ctx.info(f"{action.title()}d model: {file_path}")
@@ -2074,9 +2065,7 @@ def _etag(text: str) -> str:
 # ============================================================================
 
 
-def _parse_openscad_stderr(
-    stderr: str, returncode: Optional[int] = None
-) -> Dict[str, List[str]]:
+def _parse_openscad_stderr(stderr: str, returncode: int | None = None) -> dict[str, list[str]]:
     """
     Parse OpenSCAD stderr output into categorized message lists.
 
@@ -2094,7 +2083,7 @@ def _parse_openscad_stderr(
     }
 
 
-def _parse_stl_vertices(stl_path: Path) -> List[List[float]]:
+def _parse_stl_vertices(stl_path: Path) -> list[list[float]]:
     """
     Parse vertex coordinates from an STL file (ASCII or binary).
 
@@ -2128,11 +2117,13 @@ def _parse_stl_vertices(stl_path: Path) -> List[List[float]]:
                 parts = stripped.split()
                 if len(parts) == 4:
                     try:
-                        vertices.append([
-                            float(parts[1]),
-                            float(parts[2]),
-                            float(parts[3]),
-                        ])
+                        vertices.append(
+                            [
+                                float(parts[1]),
+                                float(parts[2]),
+                                float(parts[3]),
+                            ]
+                        )
                     except ValueError:
                         continue
     else:
@@ -2154,9 +2145,7 @@ def _parse_stl_vertices(stl_path: Path) -> List[List[float]]:
                 for _ in range(3):
                     vdata = f.read(12)
                     if len(vdata) < 12:
-                        raise ValueError(
-                            "Invalid binary STL: unexpected end of file"
-                        )
+                        raise ValueError("Invalid binary STL: unexpected end of file")
                     x, y, z = struct.unpack("<fff", vdata)
                     vertices.append([x, y, z])
                 # Skip attribute byte count (2 bytes)
@@ -2167,8 +2156,8 @@ def _parse_stl_vertices(stl_path: Path) -> List[List[float]]:
 
 @mcp.tool()
 async def get_libraries(
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Discover installed OpenSCAD libraries on the system.
 
@@ -2193,9 +2182,7 @@ async def get_libraries(
         search_paths = _library_search_paths()
 
         if ctx:
-            await ctx.info(
-                f"Searching {len(search_paths)} library path(s)..."
-            )
+            await ctx.info(f"Searching {len(search_paths)} library path(s)...")
 
         # Scan each path for libraries
         found_paths = []
@@ -2219,36 +2206,35 @@ async def get_libraries(
 
                 # Check for README files
                 readme_names = [
-                    "README", "README.md", "README.txt",
-                    "readme.md", "readme.txt",
+                    "README",
+                    "README.md",
+                    "README.txt",
+                    "readme.md",
+                    "readme.txt",
                 ]
-                has_readme = any(
-                    (entry / rn).exists() for rn in readme_names
-                )
+                has_readme = any((entry / rn).exists() for rn in readme_names)
 
                 # Identify main entry files
                 main_file_candidates = [
-                    "std.scad", "main.scad", "lib.scad",
+                    "std.scad",
+                    "main.scad",
+                    "lib.scad",
                     f"{entry.name}.scad",
                 ]
-                main_files = [
-                    mf for mf in main_file_candidates
-                    if (entry / mf).exists()
-                ]
+                main_files = [mf for mf in main_file_candidates if (entry / mf).exists()]
 
-                libraries.append({
-                    "name": entry.name,
-                    "path": str(entry),
-                    "file_count": file_count,
-                    "has_readme": has_readme,
-                    "main_files": main_files,
-                })
+                libraries.append(
+                    {
+                        "name": entry.name,
+                        "path": str(entry),
+                        "file_count": file_count,
+                        "has_readme": has_readme,
+                        "main_files": main_files,
+                    }
+                )
 
         if ctx:
-            await ctx.info(
-                f"Found {len(libraries)} library(ies) in "
-                f"{len(found_paths)} path(s)"
-            )
+            await ctx.info(f"Found {len(libraries)} library(ies) in {len(found_paths)} path(s)")
 
         return {
             "success": True,
@@ -2258,9 +2244,7 @@ async def get_libraries(
 
     except Exception as e:
         if ctx:
-            await ctx.error(
-                f"Library discovery failed: {str(e)}"
-            )
+            await ctx.error(f"Library discovery failed: {str(e)}")
         return {
             "success": False,
             "error": str(e),
@@ -2274,8 +2258,8 @@ async def get_libraries(
 
 @mcp.tool()
 async def clear_cache(
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Clear render/part files and in-memory measurement/mesh caches.
 
@@ -2307,7 +2291,9 @@ async def clear_cache(
     freed = 0
     parts_dir = cache_dir / "parts"
     part_files = (
-        list(parts_dir.glob("*.stl")) + list(parts_dir.glob("*.json")) + list(parts_dir.glob("*.csg"))
+        list(parts_dir.glob("*.stl"))
+        + list(parts_dir.glob("*.json"))
+        + list(parts_dir.glob("*.csg"))
         if parts_dir.exists()
         else []
     )
@@ -2321,9 +2307,7 @@ async def clear_cache(
             logger.warning("Failed to delete cache file %s: %s", f, exc)
 
     if ctx:
-        await ctx.info(
-            f"Cleared {cleared} cached file(s), freed {freed} bytes"
-        )
+        await ctx.info(f"Cleared {cleared} cached file(s), freed {freed} bytes")
 
     return {
         "success": True,
@@ -2337,7 +2321,7 @@ async def clear_cache(
 # ============================================================================
 
 
-def _extract_scad_dependencies(file_path: Path) -> List[str]:
+def _extract_scad_dependencies(file_path: Path) -> list[str]:
     """Return the file references written in an OpenSCAD source file.
 
     Finds ``include <...>`` / ``use <...>`` anywhere in the file (with
@@ -2361,10 +2345,10 @@ def _extract_scad_dependencies(file_path: Path) -> List[str]:
 async def get_project_files(
     project_dir: str,
     mode: str = "files",
-    symbol: Optional[str] = None,
+    symbol: str | None = None,
     direction: str = "downstream",
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     mode="files": every .scad under project_dir with size/mtime and the
     include/use/import/surface references of each. mode="trace": the
@@ -2378,24 +2362,18 @@ async def get_project_files(
         resolved_dir = Path(project_dir).resolve()
 
         # Security: validate against allowed_paths
-        if config.security.allowed_paths:
-            if not any(
-                _is_within(resolved_dir, ap)
-                for ap in config.security.allowed_paths
-            ):
-                raise ValueError(
-                    f"Project directory '{project_dir}' is not within "
-                    f"allowed paths: {config.security.allowed_paths}"
-                )
+        if config.security.allowed_paths and not any(
+            _is_within(resolved_dir, ap) for ap in config.security.allowed_paths
+        ):
+            raise ValueError(
+                f"Project directory '{project_dir}' is not within "
+                f"allowed paths: {config.security.allowed_paths}"
+            )
 
         if not resolved_dir.exists():
-            raise FileNotFoundError(
-                f"Project directory not found: {project_dir}"
-            )
+            raise FileNotFoundError(f"Project directory not found: {project_dir}")
         if not resolved_dir.is_dir():
-            raise ValueError(
-                f"Path is not a directory: {project_dir}"
-            )
+            raise ValueError(f"Path is not a directory: {project_dir}")
 
         if (mode or "files").lower() == "trace":
             from . import analysis
@@ -2406,11 +2384,13 @@ async def get_project_files(
             trace = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: analysis.trace_symbol(symbol, files, direction=direction)
             )
-            trace.update({"success": True, "mode": "trace", "scope": "lexical, file-scope constants only"})
+            trace.update(
+                {"success": True, "mode": "trace", "scope": "lexical, file-scope constants only"}
+            )
             return trace
 
-        files_info: List[Dict[str, Any]] = []
-        dependencies: Dict[str, List[str]] = {}
+        files_info: list[dict[str, Any]] = []
+        dependencies: dict[str, list[str]] = {}
 
         for scad_file in sorted(resolved_dir.rglob("*.scad")):
             try:
@@ -2419,22 +2399,22 @@ async def get_project_files(
                 continue
 
             rel = str(scad_file.relative_to(resolved_dir))
-            files_info.append({
-                "name": scad_file.name,
-                "path": str(scad_file),
-                "relative_path": rel,
-                "size_bytes": stat.st_size,
-                "modified": stat.st_mtime,
-            })
+            files_info.append(
+                {
+                    "name": scad_file.name,
+                    "path": str(scad_file),
+                    "relative_path": rel,
+                    "size_bytes": stat.st_size,
+                    "modified": stat.st_mtime,
+                }
+            )
 
             deps = _extract_scad_dependencies(scad_file)
             if deps:
                 dependencies[rel] = deps
 
         if ctx:
-            await ctx.info(
-                f"Found {len(files_info)} .scad file(s) in {project_dir}"
-            )
+            await ctx.info(f"Found {len(files_info)} .scad file(s) in {project_dir}")
 
         return {
             "success": True,
@@ -2444,9 +2424,7 @@ async def get_project_files(
 
     except Exception as e:
         if ctx:
-            await ctx.error(
-                f"Failed to scan project files: {str(e)}"
-            )
+            await ctx.error(f"Failed to scan project files: {str(e)}")
         return {
             "success": False,
             "error": str(e),
@@ -2462,12 +2440,20 @@ DEFAULT_RENDER_VIEWS = ("isometric",)
 
 # Palette for per-part colouring (camera.PALETTE when available).
 _FALLBACK_PALETTE = [
-    "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2",
-    "#D55E00", "#CC79A7", "#999999", "#000000", "#8B4513",
+    "#E69F00",
+    "#56B4E9",
+    "#009E73",
+    "#F0E442",
+    "#0072B2",
+    "#D55E00",
+    "#CC79A7",
+    "#999999",
+    "#000000",
+    "#8B4513",
 ]
 
 
-def _palette() -> List[str]:
+def _palette() -> list[str]:
     try:
         from .camera import PALETTE
 
@@ -2483,19 +2469,19 @@ class _ModelSource:
     context manager; a file path is validated against ``allowed_paths``.
     """
 
-    def __init__(self, scad_content: Optional[str], scad_file: Optional[str], prefix: str):
+    def __init__(self, scad_content: str | None, scad_file: str | None, prefix: str):
         if bool(scad_content) == bool(scad_file):
             raise ValueError("Exactly one of scad_content or scad_file must be provided")
         self.scad_content = scad_content
         self.scad_file = scad_file
         self.prefix = prefix
-        self.path: Optional[Path] = None
+        self.path: Path | None = None
         self.text: str = ""
-        self.wrapper_dir: Optional[Path] = None
-        self.model_dir: Optional[Path] = None
+        self.wrapper_dir: Path | None = None
+        self.model_dir: Path | None = None
         self.display_name: str = "<inline>"
-        self._temp: Optional[Path] = None
-        self._cleanup: List[Path] = []
+        self._temp: Path | None = None
+        self._cleanup: list[Path] = []
 
     def __enter__(self) -> "_ModelSource":
         config = get_config()
@@ -2527,7 +2513,7 @@ class _ModelSource:
             self.display_name = self.path.name
         return self
 
-    def include_paths_for_wrapper(self, include_paths: Optional[List[str]]) -> List[str]:
+    def include_paths_for_wrapper(self, include_paths: list[str] | None) -> list[str]:
         """Caller include paths plus the model's own directory."""
         paths = [str(p) for p in (include_paths or [])]
         if self.model_dir is not None and str(self.model_dir) not in paths:
@@ -2538,10 +2524,8 @@ class _ModelSource:
         for f in [self._temp, *self._cleanup]:
             if f is None:
                 continue
-            try:
+            with contextlib.suppress(OSError):
                 f.unlink()
-            except OSError:
-                pass
 
     def wrapper_file(self, wrapped: Any) -> Path:
         """Write a wrapper program to the temp dir and register it for cleanup."""
@@ -2553,7 +2537,7 @@ class _ModelSource:
         return path
 
     @property
-    def inline_path(self) -> Optional[str]:
+    def inline_path(self) -> str | None:
         return str(self._temp) if self._temp is not None else None
 
 
@@ -2579,27 +2563,29 @@ def _rebase_diagnostics(diag: Diagnostics, wrapper_path: Path, wrapped: Any, dis
             rec.file = display
             if rec.line is not None:
                 rec.line = wrapped.rebase_line(rec.line)
-        rec.trace = [t.replace(str(wrapper_path), display).replace(wname, display) for t in rec.trace]
+        rec.trace = [
+            t.replace(str(wrapper_path), display).replace(wname, display) for t in rec.trace
+        ]
 
 
-_measure_cache: Dict[str, Tuple[Any, Diagnostics]] = {}
+_measure_cache: dict[str, tuple[Any, Diagnostics]] = {}
 _MEASURE_CACHE_MAX = 32
 
 
 def _static_dependency_fingerprint(
-    text: str, base_dir: Path, include_paths: Optional[List[str]], limit: int = 400
-) -> List[str]:
+    text: str, base_dir: Path, include_paths: list[str] | None, limit: int = 400
+) -> list[str]:
     """Fingerprint files reachable through include/use/import/surface references.
 
     A static approximation of the ``-d`` closure, good enough to invalidate
     cached measurements when a constants file or library changes. Each entry
     includes its path and SHA-256; unresolvable references are skipped.
     """
-    search_roots: List[Path] = [base_dir]
+    search_roots: list[Path] = [base_dir]
     search_roots.extend(Path(p) for p in (include_paths or []))
     search_roots.extend(_library_search_paths())
-    seen: Dict[str, str] = {}
-    queue: List[Tuple[str, Path]] = [(text, base_dir)]
+    seen: dict[str, str] = {}
+    queue: list[tuple[str, Path]] = [(text, base_dir)]
     while queue and len(seen) < limit:
         current_text, current_dir = queue.pop()
         for ref in extract_source_dependencies(current_text):
@@ -2613,7 +2599,9 @@ def _static_dependency_fingerprint(
                         break
                     seen[key] = f"{key}|{hashlib.sha256(cand.read_bytes()).hexdigest()}"
                     if cand.suffix.lower() == ".scad":
-                        queue.append((cand.read_text(encoding="utf-8-sig", errors="replace"), cand.parent))
+                        queue.append(
+                            (cand.read_text(encoding="utf-8-sig", errors="replace"), cand.parent)
+                        )
                 except OSError:
                     continue
                 break
@@ -2641,13 +2629,13 @@ def _measure_cache_key(source: _ModelSource, variables, include_paths, extra: st
 
 
 def _analyze_mesh_export(
-    wrapper_content: Optional[str],
-    scad_file: Optional[str],
-    variables: Optional[Dict[str, Any]],
-    include_paths: Optional[List[str]],
+    wrapper_content: str | None,
+    scad_file: str | None,
+    variables: dict[str, Any] | None,
+    include_paths: list[str] | None,
     prefix: str,
     apply_variables: bool,
-) -> Tuple[Any, Diagnostics, Optional[Path]]:
+) -> tuple[Any, Diagnostics, Path | None]:
     """Export to STL (or SVG for 2D models) and analyse the geometry.
 
     Returns ``(stats, diagnostics, svg_path_or_None)``. ``stats`` is a
@@ -2662,8 +2650,14 @@ def _analyze_mesh_export(
     stl_output = temp_dir_path / f"{prefix}_{uuid.uuid4().hex[:8]}.stl"
     try:
         ev = _evaluate_scad(
-            wrapper_content, scad_file, str(stl_output), None,
-            variables if apply_variables else None, include_paths, "export", prefix,
+            wrapper_content,
+            scad_file,
+            str(stl_output),
+            None,
+            variables if apply_variables else None,
+            include_paths,
+            "export",
+            prefix,
         )
         diag = ev.diagnostics
         if ev.output_path is not None and ev.output_path.stat().st_size > 0:
@@ -2688,8 +2682,14 @@ def _analyze_mesh_export(
         svg_output = temp_dir_path / f"{prefix}_{uuid.uuid4().hex[:8]}.svg"
         try:
             ev2 = _evaluate_scad(
-                wrapper_content, scad_file, str(svg_output), None,
-                variables if apply_variables else None, include_paths, "export", prefix,
+                wrapper_content,
+                scad_file,
+                str(svg_output),
+                None,
+                variables if apply_variables else None,
+                include_paths,
+                "export",
+                prefix,
             )
             if ev2.output_path is not None:
                 polys = meshlib.load_svg_polygons(ev2.output_path)
@@ -2705,10 +2705,10 @@ def _analyze_mesh_export(
 
 def _measure_source(
     source: _ModelSource,
-    variables: Optional[Dict[str, Any]],
-    include_paths: Optional[List[str]],
-    part_code: Optional[str] = None,
-) -> Tuple[Any, Diagnostics]:
+    variables: dict[str, Any] | None,
+    include_paths: list[str] | None,
+    part_code: str | None = None,
+) -> tuple[Any, Diagnostics]:
     """Measure the whole model, or one part of it, with an in-process cache."""
     from .wrappers import part_wrapper
 
@@ -2720,8 +2720,12 @@ def _measure_source(
         wrapped = part_wrapper(source.text, part_code, variables)
         wpath = source.wrapper_file(wrapped)
         stats, diag, _ = _analyze_mesh_export(
-            None, str(wpath), variables, source.include_paths_for_wrapper(include_paths),
-            "part", apply_variables=False,
+            None,
+            str(wpath),
+            variables,
+            source.include_paths_for_wrapper(include_paths),
+            "part",
+            apply_variables=False,
         )
         _rebase_diagnostics(diag, wpath, wrapped, source.display_name)
     elif source.scad_content:
@@ -2743,9 +2747,9 @@ def _section_polygons(
     source: _ModelSource,
     axis: str,
     offset: float,
-    variables: Optional[Dict[str, Any]],
-    include_paths: Optional[List[str]],
-) -> Tuple[List[List[Tuple[float, float]]], Diagnostics]:
+    variables: dict[str, Any] | None,
+    include_paths: list[str] | None,
+) -> tuple[list[list[tuple[float, float]]], Diagnostics]:
     """Cut the model and return the section contours in model coordinates."""
     from . import mesh as meshlib
     from .wrappers import section_wrapper
@@ -2758,8 +2762,14 @@ def _section_polygons(
     wpath = source.wrapper_file(wrapped)
     try:
         ev = _evaluate_scad(
-            None, str(wpath), str(svg_output), None, None,
-            source.include_paths_for_wrapper(include_paths), "export", "section",
+            None,
+            str(wpath),
+            str(svg_output),
+            None,
+            None,
+            source.include_paths_for_wrapper(include_paths),
+            "export",
+            "section",
         )
         _rebase_diagnostics(ev.diagnostics, wpath, wrapped, source.display_name)
         if ev.output_path is None:
@@ -2772,11 +2782,11 @@ def _section_polygons(
 
 
 def _draw_section_png(
-    polys: List[List[Tuple[float, float]]],
-    image_size: List[int],
-    axes_labels: Tuple[str, str],
+    polys: list[list[tuple[float, float]]],
+    image_size: list[int],
+    axes_labels: tuple[str, str],
     title: str,
-) -> Tuple[bytes, float, Tuple[float, float, float, float]]:
+) -> tuple[bytes, float, tuple[float, float, float, float]]:
     """Rasterise section polygons with Pillow. Returns (png, mm_per_px, bbox)."""
 
     from PIL import ImageDraw
@@ -2795,17 +2805,21 @@ def _draw_section_png(
     mm_per_px = max(span_x / (w * (1 - 2 * margin)), span_y / (h * (1 - 2 * margin)))
     cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
 
-    def to_px(p: Tuple[float, float]) -> Tuple[float, float]:
+    def to_px(p: tuple[float, float]) -> tuple[float, float]:
         return (w / 2 + (p[0] - cx) / mm_per_px, h / 2 - (p[1] - cy) / mm_per_px)
 
     # Even-odd fill: draw every polygon, alternating fill on nesting is
     # approximated by drawing outer polygons first (by |area| desc) and holes
     # (negative signed area) in the background colour.
     def signed_area(poly):
-        return sum(
-            poly[i][0] * poly[(i + 1) % len(poly)][1] - poly[(i + 1) % len(poly)][0] * poly[i][1]
-            for i in range(len(poly))
-        ) / 2
+        return (
+            sum(
+                poly[i][0] * poly[(i + 1) % len(poly)][1]
+                - poly[(i + 1) % len(poly)][0] * poly[i][1]
+                for i in range(len(poly))
+            )
+            / 2
+        )
 
     ordered = sorted(polys, key=lambda p: -abs(signed_area(p)))
     for poly in ordered:
@@ -2836,7 +2850,7 @@ def _png_bytes(img: "PILImage.Image") -> bytes:
     return buf.getvalue()
 
 
-def _bbox_of(stats: Any) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
+def _bbox_of(stats: Any) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
     bmin = getattr(stats, "bbox_min", None)
     bmax = getattr(stats, "bbox_max", None)
     if bmin is None or bmax is None or len(bmin) != 3:
@@ -2844,7 +2858,7 @@ def _bbox_of(stats: Any) -> Optional[Tuple[Tuple[float, float, float], Tuple[flo
     return tuple(bmin), tuple(bmax)  # type: ignore[return-value]
 
 
-def _apply_quality(variables: Optional[Dict[str, Any]], quality: Any) -> Dict[str, Any]:
+def _apply_quality(variables: dict[str, Any] | None, quality: Any) -> dict[str, Any]:
     """Merge a quality preset, integer $fn, or {fn, fa, fs} under caller variables."""
     parsed = parse_dict_param(variables, {})
     if quality is not None and quality != "":
@@ -2854,7 +2868,7 @@ def _apply_quality(variables: Optional[Dict[str, Any]], quality: Any) -> Dict[st
     return parsed
 
 
-def _validate_views(views: Any, default: Tuple[str, ...]) -> List[str]:
+def _validate_views(views: Any, default: tuple[str, ...]) -> list[str]:
     parsed = list(default) if views is None else parse_list_param(views, list(default))
     invalid = [v for v in parsed if v not in VIEW_PRESETS]
     if invalid:
@@ -2865,7 +2879,7 @@ def _validate_views(views: Any, default: Tuple[str, ...]) -> List[str]:
     return parsed
 
 
-def _parse_parts(parts: Any) -> List[Dict[str, str]]:
+def _parse_parts(parts: Any) -> list[dict[str, str]]:
     """Accept [{"name","code"}], {"name": "code"}, or JSON text of either."""
     if isinstance(parts, str):
         try:
@@ -2876,34 +2890,36 @@ def _parse_parts(parts: Any) -> List[Dict[str, str]]:
         parts = [{"name": k, "code": v} for k, v in parts.items()]
     if not isinstance(parts, list) or not parts:
         raise ValueError("parts must be a non-empty list of {name, code} objects")
-    out: List[Dict[str, str]] = []
+    out: list[dict[str, str]] = []
     for item in parts:
         if isinstance(item, str):
             out.append({"name": item.rstrip("();").strip(), "code": item})
             continue
         if not isinstance(item, dict) or "code" not in item:
-            raise ValueError("each part needs a 'code' statement, e.g. {'name':'lid','code':'lid();'}")
+            raise ValueError(
+                "each part needs a 'code' statement, e.g. {'name':'lid','code':'lid();'}"
+            )
         name = str(item.get("name") or item["code"].rstrip("();").strip())
         out.append({"name": name, "code": str(item["code"])})
     return out
 
 
 def _render_one_view(
-    source_content: Optional[str],
-    source_file: Optional[str],
-    view: Optional[str],
-    camera_position: Optional[List[float]],
-    camera_target: Optional[List[float]],
-    camera_up: Optional[List[float]],
-    image_size: List[int],
+    source_content: str | None,
+    source_file: str | None,
+    view: str | None,
+    camera_position: list[float] | None,
+    camera_target: list[float] | None,
+    camera_up: list[float] | None,
+    image_size: list[int],
     color_scheme: str,
-    variables: Dict[str, Any],
-    include_paths: Optional[List[str]],
-    grounded_bbox: Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]],
+    variables: dict[str, Any],
+    include_paths: list[str] | None,
+    grounded_bbox: tuple[tuple[float, float, float], tuple[float, float, float]] | None,
     annotate: bool,
-    framed_bbox: Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]] = None,
-    callouts: Optional[List[Dict[str, Any]]] = None,
-) -> Tuple[bytes, str, Dict[str, Any]]:
+    framed_bbox: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None,
+    callouts: list[dict[str, Any]] | None = None,
+) -> tuple[bytes, str, dict[str, Any]]:
     """Render one image and build its spatial digest. Returns (png, digest, meta).
 
     ``framed_bbox`` (look-at) frames the camera on a sub-box while
@@ -2926,20 +2942,33 @@ def _render_one_view(
         bmin, bmax = grounded_bbox  # type: ignore[misc]
         fmin, fmax = framed_bbox if framed_bbox is not None else (bmin, bmax)
         direction = [eye[i] - center[i] for i in range(3)]
-        ortho = cam.fit_camera(fmin, fmax, tuple(direction), tuple(up), (image_size[0], image_size[1]))
+        ortho = cam.fit_camera(
+            fmin, fmax, tuple(direction), tuple(up), (image_size[0], image_size[1])
+        )
         eye, center = list(ortho.eye), list(ortho.center)
-        result = _as_render_result(render_scad_to_png(
-            scad_content=source_content, scad_file=source_file,
-            camera_position=eye, camera_target=center, camera_up=up,
-            image_size=image_size, color_scheme=color_scheme, variables=variables,
-            auto_center=False, include_paths=include_paths, projection="o",
-        ))
+        result = _as_render_result(
+            render_scad_to_png(
+                scad_content=source_content,
+                scad_file=source_file,
+                camera_position=eye,
+                camera_target=center,
+                camera_up=up,
+                image_size=image_size,
+                color_scheme=color_scheme,
+                variables=variables,
+                auto_center=False,
+                include_paths=include_paths,
+                projection="o",
+            )
+        )
         png = base64.b64decode(result.image_b64)
         if annotate:
             png = cam.annotate(png, ortho, bbox_min=fmin, bbox_max=fmax, label=view)
         if callouts:
             png = _draw_callouts(png, ortho, callouts)
-        digest = cam.spatial_digest(ortho, bbox_min=bmin, bbox_max=bmax, view_name=view, grounded=True)
+        digest = cam.spatial_digest(
+            ortho, bbox_min=bmin, bbox_max=bmax, view_name=view, grounded=True
+        )
         if framed_bbox is not None:
             digest += (
                 f"\nframed (look_at): [{fmin[0]:.3g},{fmin[1]:.3g},{fmin[2]:.3g}].."
@@ -2950,17 +2979,25 @@ def _render_one_view(
                 f"{c.get('label')} @ {c.get('at')}" for c in callouts[:8]
             )
     else:
-        result = _as_render_result(render_scad_to_png(
-            scad_content=source_content, scad_file=source_file,
-            camera_position=eye, camera_target=center, camera_up=up,
-            image_size=image_size, color_scheme=color_scheme, variables=variables,
-            auto_center=True, include_paths=include_paths,
-        ))
-        png = base64.b64decode(result.image_b64)
-        ortho = cam.OrthoCamera(tuple(eye), tuple(center), tuple(up), (image_size[0], image_size[1]))
-        digest = cam.spatial_digest(
-            ortho, projection="perspective", view_name=view, grounded=False
+        result = _as_render_result(
+            render_scad_to_png(
+                scad_content=source_content,
+                scad_file=source_file,
+                camera_position=eye,
+                camera_target=center,
+                camera_up=up,
+                image_size=image_size,
+                color_scheme=color_scheme,
+                variables=variables,
+                auto_center=True,
+                include_paths=include_paths,
+            )
         )
+        png = base64.b64decode(result.image_b64)
+        ortho = cam.OrthoCamera(
+            tuple(eye), tuple(center), tuple(up), (image_size[0], image_size[1])
+        )
+        digest = cam.spatial_digest(ortho, projection="perspective", view_name=view, grounded=False)
     return png, digest, result.metadata()
 
 
@@ -2968,7 +3005,7 @@ def _coerce_section_offset(value: Any) -> Any:
     """Numbers stay numbers; strings are validated OpenSCAD expressions."""
     if isinstance(value, bool):
         raise ValueError("section_offset must be a number or an expression string")
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return float(value)
     text = str(value).strip()
     try:
@@ -2980,7 +3017,7 @@ def _coerce_section_offset(value: Any) -> Any:
     return validate_expression(text)
 
 
-def _resolved_section_offset(diag: Diagnostics, offset: Any) -> Optional[float]:
+def _resolved_section_offset(diag: Diagnostics, offset: Any) -> float | None:
     if not isinstance(offset, str):
         return float(offset)
     from .wrappers import SECTION_MARKER, parse_echo_values
@@ -2991,12 +3028,16 @@ def _resolved_section_offset(diag: Diagnostics, offset: Any) -> Optional[float]:
                 vals = parse_echo_values(line)
             except ValueError:
                 continue
-            if len(vals) >= 2 and isinstance(vals[1], (int, float)) and not isinstance(vals[1], bool):
+            if (
+                len(vals) >= 2
+                and isinstance(vals[1], int | float)
+                and not isinstance(vals[1], bool)
+            ):
                 return float(vals[1])
     return None
 
 
-def _draw_callouts(png: bytes, ortho: Any, callouts: List[Dict[str, Any]]) -> bytes:
+def _draw_callouts(png: bytes, ortho: Any, callouts: list[dict[str, Any]]) -> bytes:
     """Label up to 8 world points on a grounded render (no overlap resolution)."""
     import io
 
@@ -3011,11 +3052,11 @@ def _draw_callouts(png: bytes, ortho: Any, callouts: List[Dict[str, Any]]) -> by
     except Exception:  # pragma: no cover
         font = None
     w, h = img.size
-    used: List[Tuple[int, int, int, int]] = []
+    used: list[tuple[int, int, int, int]] = []
     for i, c in enumerate(callouts[:8]):
         at = c.get("at")
         label = str(c.get("label", f"#{i + 1}"))
-        if not (isinstance(at, (list, tuple)) and len(at) == 3):
+        if not (isinstance(at, list | tuple) and len(at) == 3):
             continue
         x, y = ortho.project(tuple(float(v) for v in at))
         x, y = int(round(x)), int(round(y))
@@ -3025,9 +3066,15 @@ def _draw_callouts(png: bytes, ortho: Any, callouts: List[Dict[str, Any]]) -> by
         # Try four offsets to avoid piling labels on one another.
         for dx, dy in ((14, -18), (14, 10), (-90, -18), (-90, 10)):
             tx, ty = x + dx, y + dy
-            box = draw.textbbox((tx, ty), label, font=font) if font else (tx, ty, tx + 8 * len(label), ty + 16)
+            box = (
+                draw.textbbox((tx, ty), label, font=font)
+                if font
+                else (tx, ty, tx + 8 * len(label), ty + 16)
+            )
             rect = (box[0] - 4, box[1] - 2, box[2] + 4, box[3] + 2)
-            if all(rect[2] < u[0] or rect[0] > u[2] or rect[3] < u[1] or rect[1] > u[3] for u in used):
+            if all(
+                rect[2] < u[0] or rect[0] > u[2] or rect[3] < u[1] or rect[1] > u[3] for u in used
+            ):
                 used.append(rect)
                 draw.rectangle(rect, fill=(248, 248, 248, 235), outline=(24, 24, 24, 255))
                 draw.line((x, y, tx, ty), fill=(0, 0, 0, 255), width=1)
@@ -3040,9 +3087,9 @@ def _draw_callouts(png: bytes, ortho: Any, callouts: List[Dict[str, Any]]) -> by
 
 def _resolve_look_at(
     look_at: Any,
-    part_bboxes: Dict[str, Tuple[Tuple[float, float, float], Tuple[float, float, float]]],
+    part_bboxes: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]],
     pad_mm: float = 2.0,
-) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
     """A part name, a point, or {min,max} -> the box to frame."""
     if look_at is None:
         return None
@@ -3059,7 +3106,11 @@ def _resolve_look_at(
             return _resolve_look_at(look_at, part_bboxes, pad_mm)
     elif isinstance(look_at, dict):
         bmin, bmax = tuple(look_at["min"]), tuple(look_at["max"])
-    elif isinstance(look_at, (list, tuple)) and len(look_at) == 3 and all(isinstance(v, (int, float)) for v in look_at):
+    elif (
+        isinstance(look_at, list | tuple)
+        and len(look_at) == 3
+        and all(isinstance(v, int | float) for v in look_at)
+    ):
         c = tuple(float(v) for v in look_at)
         bmin, bmax = tuple(v - 5 for v in c), tuple(v + 5 for v in c)
     else:
@@ -3070,7 +3121,7 @@ def _resolve_look_at(
     )
 
 
-def _parts_render_body(asm: Assembly, colors: Dict[str, str], isolate: Optional[str]) -> str:
+def _parts_render_body(asm: Assembly, colors: dict[str, str], isolate: str | None) -> str:
     """``!union(){ color(c) { placement { code } } ... }`` with ghosts translucent."""
     lines = []
     for p in asm.parts:
@@ -3091,29 +3142,29 @@ def _parts_render_body(asm: Assembly, colors: Dict[str, str], isolate: Optional[
 
 @mcp.tool(output_schema=None)
 async def render(
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
+    scad_content: str | None = None,
+    scad_file: str | None = None,
     mode: str = "views",
-    views: Optional[List[str]] = None,
-    camera_position: Union[str, List[float], Dict[str, float], None] = None,
-    camera_target: Union[str, List[float], Dict[str, float], None] = None,
-    camera_up: Union[str, List[float], Dict[str, float], None] = None,
-    image_size: Union[str, List[int], None] = None,
+    views: list[str] | None = None,
+    camera_position: str | list[float] | dict[str, float] | None = None,
+    camera_target: str | list[float] | dict[str, float] | None = None,
+    camera_up: str | list[float] | dict[str, float] | None = None,
+    image_size: str | list[int] | None = None,
     color_scheme: str = "Cornfield",
-    variables: Optional[Dict[str, Any]] = None,
+    variables: dict[str, Any] | None = None,
     quality: Any = None,
-    include_paths: Optional[List[str]] = None,
+    include_paths: list[str] | None = None,
     grounded: bool = False,
     annotate: bool = False,
     section_axis: str = "z",
     section_offset: Any = 0.0,
-    parts: Optional[List[Dict[str, Any]]] = None,
-    isolate: Optional[str] = None,
+    parts: list[dict[str, Any]] | None = None,
+    isolate: str | None = None,
     look_at: Any = None,
-    callouts: Optional[List[Dict[str, Any]]] = None,
-    variables_after: Optional[Dict[str, Any]] = None,
-    scad_content_after: Optional[str] = None,
-    ctx: Optional[Context] = None,
+    callouts: list[dict[str, Any]] | None = None,
+    variables_after: dict[str, Any] | None = None,
+    scad_content_after: str | None = None,
+    ctx: Context | None = None,
 ):
     """
     Images of a model, each preceded by a text digest (view direction,
@@ -3146,14 +3197,14 @@ async def render(
             grounded = True
         loop = asyncio.get_running_loop()
         semaphore = get_render_semaphore()
-        items: List[Any] = []
-        meta: Dict[str, Any] = {"mode": mode, "image_size": parsed_size}
+        items: list[Any] = []
+        meta: dict[str, Any] = {"mode": mode, "image_size": parsed_size}
 
         if mode == "views":
             custom_camera = views is None and (
                 camera_position is not None or camera_target is not None
             )
-            view_list: List[Optional[str]] = (
+            view_list: list[str | None] = (
                 [None] if custom_camera else list(_validate_views(views, DEFAULT_RENDER_VIEWS))
             )
             cam_pos = parse_camera_param(camera_position, [70, 70, 70]) if custom_camera else None
@@ -3170,12 +3221,23 @@ async def render(
                 if bbox is None:
                     raise ValueError("grounded rendering needs a 3D model with a bounding box")
 
-            async def _one(v: Optional[str]):
+            async def _one(v: str | None):
                 async with semaphore:
                     return await loop.run_in_executor(
-                        None, _render_one_view, scad_content, scad_file, v,
-                        cam_pos, cam_tgt, cam_up, parsed_size, color_scheme, parsed_vars,
-                        include_paths, bbox, annotate,
+                        None,
+                        _render_one_view,
+                        scad_content,
+                        scad_file,
+                        v,
+                        cam_pos,
+                        cam_tgt,
+                        cam_up,
+                        parsed_size,
+                        color_scheme,
+                        parsed_vars,
+                        include_paths,
+                        bbox,
+                        annotate,
                     )
 
             framed = _resolve_look_at(look_at, {}, 2.0) if (look_at is not None) else None
@@ -3184,16 +3246,29 @@ async def render(
             if callouts and bbox is None:
                 raise ValueError("callouts need grounded=true")
 
-            async def _one(v: Optional[str]):  # noqa: F811 - replaces the plain renderer above
+            async def _one(v: str | None):  # noqa: F811 - replaces the plain renderer above
                 async with semaphore:
                     return await loop.run_in_executor(
-                        None, _render_one_view, scad_content, scad_file, v,
-                        cam_pos, cam_tgt, cam_up, parsed_size, color_scheme, parsed_vars,
-                        include_paths, bbox, annotate, framed, callouts,
+                        None,
+                        _render_one_view,
+                        scad_content,
+                        scad_file,
+                        v,
+                        cam_pos,
+                        cam_tgt,
+                        cam_up,
+                        parsed_size,
+                        color_scheme,
+                        parsed_vars,
+                        include_paths,
+                        bbox,
+                        annotate,
+                        framed,
+                        callouts,
                     )
 
             results = await asyncio.gather(*[_one(v) for v in view_list], return_exceptions=True)
-            failed: Dict[str, str] = {}
+            failed: dict[str, str] = {}
             for v, res in zip(view_list, results, strict=False):
                 name = v or "custom"
                 if isinstance(res, Exception):
@@ -3203,8 +3278,18 @@ async def render(
                 items.append(f"View: {name}\n{digest}")
                 items.append(MCPImage(data=png, format="png"))
                 if "errors" not in meta:
-                    meta.update({k: m[k] for k in ("errors", "warnings", "hints", "echo_output", "cached") if k in m})
-            meta["views"] = [v or "custom" for v, r in zip(view_list, results, strict=False) if not isinstance(r, Exception)]
+                    meta.update(
+                        {
+                            k: m[k]
+                            for k in ("errors", "warnings", "hints", "echo_output", "cached")
+                            if k in m
+                        }
+                    )
+            meta["views"] = [
+                v or "custom"
+                for v, r in zip(view_list, results, strict=False)
+                if not isinstance(r, Exception)
+            ]
             if failed:
                 meta["failed_views"] = failed
             if bbox is not None:
@@ -3219,8 +3304,13 @@ async def render(
             with _ModelSource(scad_content, scad_file, "section") as src:
                 async with semaphore:
                     polys, diag = await loop.run_in_executor(
-                        None, _section_polygons, src, section_axis, offset_value,
-                        parsed_vars, include_paths,
+                        None,
+                        _section_polygons,
+                        src,
+                        section_axis,
+                        offset_value,
+                        parsed_vars,
+                        include_paths,
                     )
             axes_labels = section_in_plane_axes(section_axis)
             resolved = _resolved_section_offset(diag, offset_value)
@@ -3270,7 +3360,7 @@ async def render(
                 wpath = src.wrapper_file(wrapped)
                 view_list2 = list(_validate_views(views, DEFAULT_RENDER_VIEWS))
                 bbox = None
-                part_bboxes: Dict[str, Any] = {}
+                part_bboxes: dict[str, Any] = {}
                 if grounded or look_at is not None or callouts:
                     exported = await _export_parts(src, asm, parsed_vars, include_paths, ctx)
                     for n, e in exported.items():
@@ -3283,15 +3373,30 @@ async def render(
                             tuple(min(b[0][i] for b in part_bboxes.values()) for i in range(3)),
                             tuple(max(b[1][i] for b in part_bboxes.values()) for i in range(3)),
                         )
-                framed = _resolve_look_at(look_at, part_bboxes, 2.0) if look_at is not None else None
+                framed = (
+                    _resolve_look_at(look_at, part_bboxes, 2.0) if look_at is not None else None
+                )
                 wrapper_paths = src.include_paths_for_wrapper(include_paths)
 
                 async def _one_part_view(v: str):
                     async with semaphore:
                         return await loop.run_in_executor(
-                            None, _render_one_view, None, str(wpath), v, None, None, None,
-                            parsed_size, color_scheme, {}, wrapper_paths, bbox, annotate,
-                            framed, callouts,
+                            None,
+                            _render_one_view,
+                            None,
+                            str(wpath),
+                            v,
+                            None,
+                            None,
+                            None,
+                            parsed_size,
+                            color_scheme,
+                            {},
+                            wrapper_paths,
+                            bbox,
+                            annotate,
+                            framed,
+                            callouts,
                         )
 
                 results = await asyncio.gather(*[_one_part_view(v) for v in view_list2])
@@ -3306,9 +3411,16 @@ async def render(
                 if "errors" not in meta:
                     meta.update({k: m[k] for k in ("errors", "warnings", "hints") if k in m})
             meta["parts"] = [
-                {"name": p.name, "color": colors[p.name],
-                 **({"ghost": True} if p.ghost or (isolate and p.name != isolate) else {}),
-                 **({"bbox": [list(part_bboxes[p.name][0]), list(part_bboxes[p.name][1])]} if p.name in part_bboxes else {})}
+                {
+                    "name": p.name,
+                    "color": colors[p.name],
+                    **({"ghost": True} if p.ghost or (isolate and p.name != isolate) else {}),
+                    **(
+                        {"bbox": [list(part_bboxes[p.name][0]), list(part_bboxes[p.name][1])]}
+                        if p.name in part_bboxes
+                        else {}
+                    ),
+                }
                 for p in part_list
             ]
             meta["frame"] = "assembly"
@@ -3323,16 +3435,32 @@ async def render(
                 after_vars.update(parse_dict_param(variables_after, {}))
             view_name = list(_validate_views(views, DEFAULT_RENDER_VIEWS))[0]
 
-            async def _side(content: Optional[str], file: Optional[str], vars_: Dict[str, Any]):
+            async def _side(content: str | None, file: str | None, vars_: dict[str, Any]):
                 async with semaphore:
                     return await loop.run_in_executor(
-                        None, _render_one_view, content, file, view_name, None, None, None,
-                        parsed_size, color_scheme, vars_, include_paths, None, False,
+                        None,
+                        _render_one_view,
+                        content,
+                        file,
+                        view_name,
+                        None,
+                        None,
+                        None,
+                        parsed_size,
+                        color_scheme,
+                        vars_,
+                        include_paths,
+                        None,
+                        False,
                     )
 
             before, after = await asyncio.gather(
                 _side(scad_content, scad_file, parsed_vars),
-                _side(scad_content_after or scad_content, None if scad_content_after else scad_file, after_vars),
+                _side(
+                    scad_content_after or scad_content,
+                    None if scad_content_after else scad_file,
+                    after_vars,
+                ),
             )
             for label, (png, digest, m) in (("Before", before), ("After", after)):
                 items.append(f"{label}: view {view_name}\n{digest}")
@@ -3355,7 +3483,7 @@ async def render(
 # ============================================================================
 
 
-def _stats_dict(stats: Any, detailed: bool) -> Dict[str, Any]:
+def _stats_dict(stats: Any, detailed: bool) -> dict[str, Any]:
     if hasattr(stats, "to_dict"):
         try:
             return stats.to_dict(detailed=detailed)
@@ -3366,29 +3494,29 @@ def _stats_dict(stats: Any, detailed: bool) -> Dict[str, Any]:
 
 @mcp.tool()
 async def measure(
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
+    scad_content: str | None = None,
+    scad_file: str | None = None,
     mode: str = "model",
-    variables: Optional[Dict[str, Any]] = None,
-    include_paths: Optional[List[str]] = None,
-    parts: Optional[List[Dict[str, Any]]] = None,
+    variables: dict[str, Any] | None = None,
+    include_paths: list[str] | None = None,
+    parts: list[dict[str, Any]] | None = None,
     section_axis: str = "z",
     section_offset: Any = 0.0,
-    material: Optional[str] = None,
-    density_g_cm3: Optional[float] = None,
-    mesh: Optional[str] = None,
-    part: Optional[str] = None,
-    points: Optional[List[Any]] = None,
-    rays: Optional[List[Any]] = None,
-    polyline: Optional[List[List[float]]] = None,
+    material: str | None = None,
+    density_g_cm3: float | None = None,
+    mesh: str | None = None,
+    part: str | None = None,
+    points: list[Any] | None = None,
+    rays: list[Any] | None = None,
+    polyline: list[list[float]] | None = None,
     orientation: Any = None,
-    about_axis: Optional[List[List[float]]] = None,
+    about_axis: list[list[float]] | None = None,
     nozzle_mm: float = 0.4,
-    layer_height_mm: Optional[float] = None,
+    layer_height_mm: float | None = None,
     quality: Any = None,
     response_format: str = "concise",
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Exact numbers from a model's geometry (mm). Prefer this over judging a
     picture. parts=[{name, code, place?, material?, mass_g?}] names
@@ -3426,15 +3554,31 @@ async def measure(
             if bool(scad_content) == bool(scad_file):
                 raise ValueError("Exactly one of scad_content or scad_file must be provided")
             return await _measure_extended(
-                mode, scad_content, scad_file, parsed_vars, include_paths, parts, part,
-                points, rays, polyline, orientation, about_axis, material, density_g_cm3,
-                nozzle_mm, layer_height_mm, quality, detailed, ctx,
+                mode,
+                scad_content,
+                scad_file,
+                parsed_vars,
+                include_paths,
+                parts,
+                part,
+                points,
+                rays,
+                polyline,
+                orientation,
+                about_axis,
+                material,
+                density_g_cm3,
+                nozzle_mm,
+                layer_height_mm,
+                quality,
+                detailed,
+                ctx,
             )
         if quality is not None:
             parsed_vars.update(_quality_to_variables(quality))
         loop = asyncio.get_running_loop()
         semaphore = get_render_semaphore()
-        result: Dict[str, Any] = {"success": True, "mode": mode, "units": "mm"}
+        result: dict[str, Any] = {"success": True, "mode": mode, "units": "mm"}
 
         if mesh:
             if scad_content or scad_file:
@@ -3482,16 +3626,18 @@ async def measure(
                     for p in asm_parts.parts
                 ]
 
-                async def _one(p: Dict[str, str]):
+                async def _one(p: dict[str, str]):
                     async with semaphore:
                         return await loop.run_in_executor(
                             None, _measure_source, src, parsed_vars, include_paths, p["code"]
                         )
 
-                outcomes = await asyncio.gather(*[_one(p) for p in part_list], return_exceptions=True)
-                per_part: List[Dict[str, Any]] = []
-                boxes: List[Tuple[str, Tuple[float, ...], Tuple[float, ...]]] = []
-                errors: List[str] = []
+                outcomes = await asyncio.gather(
+                    *[_one(p) for p in part_list], return_exceptions=True
+                )
+                per_part: list[dict[str, Any]] = []
+                boxes: list[tuple[str, tuple[float, ...], tuple[float, ...]]] = []
+                errors: list[str] = []
                 for p, out in zip(part_list, outcomes, strict=False):
                     if isinstance(out, Exception):
                         per_part.append({"name": p["name"], "error": str(out)})
@@ -3516,7 +3662,8 @@ async def measure(
                     amin = [min(b[1][i] for b in boxes) for i in range(3)]
                     amax = [max(b[2][i] for b in boxes) for i in range(3)]
                     result["assembly_bbox"] = {
-                        "min": amin, "max": amax,
+                        "min": amin,
+                        "max": amax,
                         "size": [round(amax[i] - amin[i], 4) for i in range(3)],
                     }
                     overlaps = []
@@ -3540,11 +3687,19 @@ async def measure(
                 offset_value = _coerce_section_offset(section_offset)
                 async with semaphore:
                     polys, diag = await loop.run_in_executor(
-                        None, _section_polygons, src, section_axis, offset_value,
-                        parsed_vars, include_paths,
+                        None,
+                        _section_polygons,
+                        src,
+                        section_axis,
+                        offset_value,
+                        parsed_vars,
+                        include_paths,
                     )
                 axes_labels = section_in_plane_axes(section_axis)
-                result["plane"] = {"axis": section_axis.lower(), "offset": _resolved_section_offset(diag, offset_value)}
+                result["plane"] = {
+                    "axis": section_axis.lower(),
+                    "offset": _resolved_section_offset(diag, offset_value),
+                }
                 result["in_plane_axes"] = {"x": axes_labels[0], "y": axes_labels[1]}
                 if not polys:
                     result["empty_section"] = True
@@ -3571,7 +3726,7 @@ async def measure(
         return {"success": False, "mode": mode, "error": str(e)}
 
 
-def _mass_block(stats: Any, material: Optional[str], density: Optional[float]) -> Dict[str, Any]:
+def _mass_block(stats: Any, material: str | None, density: float | None) -> dict[str, Any]:
     from . import mesh as meshlib
 
     volume = getattr(stats, "volume", None)
@@ -3603,18 +3758,18 @@ def _mass_block(stats: Any, material: Optional[str], density: Optional[float]) -
 
 @mcp.tool()
 async def validate(
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
+    scad_content: str | None = None,
+    scad_file: str | None = None,
     mode: str = "syntax",
-    variables: Optional[Dict[str, Any]] = None,
-    include_paths: Optional[List[str]] = None,
-    predicates: Optional[List[str]] = None,
-    sweep: Optional[Dict[str, Any]] = None,
+    variables: dict[str, Any] | None = None,
+    include_paths: list[str] | None = None,
+    predicates: list[str] | None = None,
+    sweep: dict[str, Any] | None = None,
     autofix: bool = False,
     orientation: Any = None,
-    profile: Optional[Dict[str, Any]] = None,
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    profile: dict[str, Any] | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Check a model. "valid" is false whenever an ERROR was reported, whatever
     OpenSCAD's exit code was.
@@ -3642,7 +3797,9 @@ async def validate(
         if bool(scad_content) == bool(scad_file):
             raise ValueError("Exactly one of scad_content or scad_file must be provided")
         if mode not in ("syntax", "geometry", "predicates", "includes", "printability"):
-            raise ValueError("mode must be one of: syntax, geometry, predicates, includes, printability")
+            raise ValueError(
+                "mode must be one of: syntax, geometry, predicates, includes, printability"
+            )
         if mode == "printability":
             return await _validate_printability(
                 scad_content, scad_file, variables, include_paths, orientation, profile or {}, ctx
@@ -3658,11 +3815,19 @@ async def validate(
         if mode == "syntax":
             async with semaphore:
                 ev = await loop.run_in_executor(
-                    None, _evaluate_scad, scad_content, scad_file, null_output, "csg",
-                    parsed_vars, include_paths, "validation", "validate",
+                    None,
+                    _evaluate_scad,
+                    scad_content,
+                    scad_file,
+                    null_output,
+                    "csg",
+                    parsed_vars,
+                    include_paths,
+                    "validation",
+                    "validate",
                 )
             diag = ev.diagnostics
-            response: Dict[str, Any] = {"success": True, "mode": mode, "valid": diag.ok}
+            response: dict[str, Any] = {"success": True, "mode": mode, "valid": diag.ok}
             response.update(diag.to_dict(include_records=True))
             missing = unresolved_includes(diag)
             if missing:
@@ -3675,35 +3840,45 @@ async def validate(
                     stats, diag = await loop.run_in_executor(
                         None, _measure_source, src, parsed_vars, include_paths
                     )
-            findings: List[Dict[str, Any]] = []
+            findings: list[dict[str, Any]] = []
             health = diag.mesh_health()
             if health.get("manifold") is False:
                 findings.append({"code": "non_manifold", "detail": health.get("issue", "")})
             if getattr(stats, "is_watertight", True) is False:
-                findings.append({
-                    "code": "open_edges",
-                    "detail": f"{getattr(stats, 'open_edge_count', 0)} open edge(s); the mesh is not closed",
-                })
+                findings.append(
+                    {
+                        "code": "open_edges",
+                        "detail": f"{getattr(stats, 'open_edge_count', 0)} open edge(s); the mesh is not closed",
+                    }
+                )
             if getattr(stats, "non_manifold_edge_count", 0):
-                findings.append({
-                    "code": "non_manifold_edges",
-                    "detail": f"{stats.non_manifold_edge_count} edge(s) shared by more than two faces",
-                })
+                findings.append(
+                    {
+                        "code": "non_manifold_edges",
+                        "detail": f"{stats.non_manifold_edge_count} edge(s) shared by more than two faces",
+                    }
+                )
             if getattr(stats, "solid_count", 1) > 1:
-                findings.append({
-                    "code": "multiple_solids",
-                    "detail": f"{stats.solid_count} separate solids; intended for a single part?",
-                })
+                findings.append(
+                    {
+                        "code": "multiple_solids",
+                        "detail": f"{stats.solid_count} separate solids; intended for a single part?",
+                    }
+                )
             if getattr(stats, "cavity_count", 0):
-                findings.append({
-                    "code": "cavities",
-                    "detail": f"{stats.cavity_count} enclosed cavity(ies); unprintable trapped volume unless intended",
-                })
+                findings.append(
+                    {
+                        "code": "cavities",
+                        "detail": f"{stats.cavity_count} enclosed cavity(ies); unprintable trapped volume unless intended",
+                    }
+                )
             if getattr(stats, "degenerate_triangle_count", 0):
-                findings.append({
-                    "code": "degenerate_triangles",
-                    "detail": f"{stats.degenerate_triangle_count} zero-area triangle(s)",
-                })
+                findings.append(
+                    {
+                        "code": "degenerate_triangles",
+                        "detail": f"{stats.degenerate_triangle_count} zero-area triangle(s)",
+                    }
+                )
             for err in diag.errors:
                 findings.append({"code": "openscad_error", "detail": err})
             response = {
@@ -3722,14 +3897,24 @@ async def validate(
 
             exprs = parse_list_param(predicates, [])
             if not exprs:
-                raise ValueError("predicates must be a non-empty list of OpenSCAD boolean expressions")
+                raise ValueError(
+                    "predicates must be a non-empty list of OpenSCAD boolean expressions"
+                )
             with _ModelSource(scad_content, scad_file, "pred") as src:
                 wrapped = eval_wrapper(src.text, [str(e) for e in exprs], parsed_vars)
                 wpath = src.wrapper_file(wrapped)
                 async with semaphore:
                     ev = await loop.run_in_executor(
-                        None, _evaluate_scad, None, str(wpath), null_output, "csg",
-                        None, src.include_paths_for_wrapper(include_paths), "validation", "predicates",
+                        None,
+                        _evaluate_scad,
+                        None,
+                        str(wpath),
+                        null_output,
+                        "csg",
+                        None,
+                        src.include_paths_for_wrapper(include_paths),
+                        "validation",
+                        "predicates",
                     )
                 _rebase_diagnostics(ev.diagnostics, wpath, wrapped, src.display_name)
             diag = ev.diagnostics
@@ -3737,12 +3922,14 @@ async def validate(
             results = []
             for expr, r in zip(exprs, evaluated, strict=False):
                 passed = r.get("evaluated") and r.get("value") is True
-                results.append({
-                    "predicate": expr,
-                    "pass": bool(passed),
-                    "value": r.get("value"),
-                    "type": r.get("type", "undef"),
-                })
+                results.append(
+                    {
+                        "predicate": expr,
+                        "pass": bool(passed),
+                        "value": r.get("value"),
+                        "type": r.get("type", "undef"),
+                    }
+                )
             response = {
                 "success": True,
                 "mode": mode,
@@ -3766,16 +3953,28 @@ async def validate(
 
         # includes
         with _ModelSource(scad_content, scad_file, "inc") as src:
-            text = src.scad_content if src.scad_content else (src.path or Path()).read_text(encoding="utf-8-sig", errors="replace")
+            text = (
+                src.scad_content
+                if src.scad_content
+                else (src.path or Path()).read_text(encoding="utf-8-sig", errors="replace")
+            )
             references = extract_source_dependencies(text)
             async with semaphore:
                 ev = await loop.run_in_executor(
-                    None, _evaluate_scad, scad_content, scad_file, null_output, "csg",
-                    parsed_vars, include_paths, "validation", "includes",
+                    None,
+                    _evaluate_scad,
+                    scad_content,
+                    scad_file,
+                    null_output,
+                    "csg",
+                    parsed_vars,
+                    include_paths,
+                    "validation",
+                    "includes",
                 )
         diag = ev.diagnostics
         missing = set(unresolved_includes(diag))
-        resolved: List[Dict[str, Any]] = []
+        resolved: list[dict[str, Any]] = []
         model_dir = (src.path or Path()).parent
         dep_resolved = {}
         for d in ev.dependencies:
@@ -3801,12 +4000,14 @@ async def validate(
             # OpenSCAD records import()/surface() targets it *tried* to read,
             # so existence must be checked separately.
             exists = match is not None and Path(match).exists()
-            resolved.append({
-                "reference": ref,
-                "resolved_path": match if exists else None,
-                "found": exists and ref not in missing,
-            })
-        lint: List[Dict[str, Any]] = []
+            resolved.append(
+                {
+                    "reference": ref,
+                    "resolved_path": match if exists else None,
+                    "found": exists and ref not in missing,
+                }
+            )
+        lint: list[dict[str, Any]] = []
         if src.path is not None and src.scad_content is None:
             try:
                 from . import analysis
@@ -3824,12 +4025,17 @@ async def validate(
         response = {
             "success": True,
             "mode": mode,
-            "valid": all(r["found"] for r in resolved) and not diag.errors
+            "valid": all(r["found"] for r in resolved)
+            and not diag.errors
             and not any(f.get("severity") == "error" and not f.get("fixed") for f in lint),
             "references": resolved,
             "lint": lint,
             "files_read": [d for d in ev.dependencies if not d.endswith(Path(src.path or "").name)],
-            "search_paths": [str(p) for p in ([Path(p) for p in (include_paths or [])] + _library_search_paths()) if Path(p).exists()],
+            "search_paths": [
+                str(p)
+                for p in ([Path(p) for p in (include_paths or [])] + _library_search_paths())
+                if Path(p).exists()
+            ],
         }
         response.update(diag.to_dict(include_records=False))
         return response
@@ -3846,13 +4052,13 @@ async def validate(
 
 @mcp.tool()
 async def scad_eval(
-    expressions: List[str],
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
-    variables: Optional[Dict[str, Any]] = None,
-    include_paths: Optional[List[str]] = None,
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    expressions: list[str],
+    scad_content: str | None = None,
+    scad_file: str | None = None,
+    variables: dict[str, Any] | None = None,
+    include_paths: list[str] | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Evaluate OpenSCAD expressions and return typed values (number, vector,
     string, bool, range, undef). With scad_content/scad_file the
@@ -3873,13 +4079,23 @@ async def scad_eval(
         _validate_variable_names(parsed_vars)
         null_output = "NUL" if platform.system() == "Windows" else "/dev/null"
         loop = asyncio.get_running_loop()
-        with _ModelSource(scad_content or "// standalone\n" if not scad_file else None, scad_file, "eval") as src:
+        with _ModelSource(
+            scad_content or "// standalone\n" if not scad_file else None, scad_file, "eval"
+        ) as src:
             wrapped = eval_wrapper(src.text, exprs, parsed_vars)
             wpath = src.wrapper_file(wrapped)
             async with get_render_semaphore():
                 ev = await loop.run_in_executor(
-                    None, _evaluate_scad, None, str(wpath), null_output, "csg",
-                    None, src.include_paths_for_wrapper(include_paths), "evaluation", "eval",
+                    None,
+                    _evaluate_scad,
+                    None,
+                    str(wpath),
+                    null_output,
+                    "csg",
+                    None,
+                    src.include_paths_for_wrapper(include_paths),
+                    "evaluation",
+                    "eval",
                 )
             _rebase_diagnostics(ev.diagnostics, wpath, wrapped, src.display_name)
         diag = ev.diagnostics
@@ -3887,7 +4103,7 @@ async def scad_eval(
         for expr, r in zip(exprs, results, strict=False):
             r["expression"] = expr
         other_echo = [e for e in diag.echo_output if "__OPENSCAD_MCP_EVAL__" not in e]
-        response: Dict[str, Any] = {
+        response: dict[str, Any] = {
             "success": not diag.errors,
             "results": results,
             "errors": diag.errors,
@@ -3913,13 +4129,13 @@ async def scad_eval(
 @mcp.tool()
 async def reference(
     topic: str = "conventions",
-    query: Optional[str] = None,
+    query: str | None = None,
     detailed: bool = False,
-    diameter_mm: Optional[float] = None,
-    shaft_mm: Optional[float] = None,
-    bore_mm: Optional[float] = None,
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    diameter_mm: float | None = None,
+    shaft_mm: float | None = None,
+    bore_mm: float | None = None,
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Sourced engineering data for 3D-printed parts, each entry with a
     confidence label (standard / consensus / calibrate). topics: fits
@@ -3939,8 +4155,12 @@ async def reference(
         if topic == "list":
             return {"success": True, "topics": ref.list_topics()}
         if topic == "fits" and diameter_mm is not None:
-            return {"success": True, "topic": "fits", "diameter_mm": diameter_mm,
-                    "matches": ref.fit_for_diameter(float(diameter_mm))}
+            return {
+                "success": True,
+                "topic": "fits",
+                "diameter_mm": diameter_mm,
+                "matches": ref.fit_for_diameter(float(diameter_mm)),
+            }
         if topic == "fits" and shaft_mm is not None and bore_mm is not None:
             data = ref.fit_class(float(shaft_mm), float(bore_mm))
             data.update({"success": True, "topic": "fits"})
@@ -3959,7 +4179,6 @@ async def reference(
 # ============================================================================
 
 
-
 @dataclass
 class ExportedPart:
     name: str
@@ -3976,11 +4195,11 @@ def _parts_cache_dir() -> Path:
     return d
 
 
-def _quality_to_variables(quality: Any) -> Dict[str, Any]:
+def _quality_to_variables(quality: Any) -> dict[str, Any]:
     """Accept quality as preset name, fn integer, or {fn, fa, fs}."""
     if quality is None:
         return {}
-    if isinstance(quality, (int, float)) and not isinstance(quality, bool):
+    if isinstance(quality, int | float) and not isinstance(quality, bool):
         return {"$fn": int(quality)}
     if isinstance(quality, str):
         if quality.isdigit():
@@ -3997,8 +4216,11 @@ def _quality_to_variables(quality: Any) -> Dict[str, Any]:
 
 
 def _part_cache_key(
-    source: _ModelSource, asm: Assembly, part: Part, variables: Dict[str, Any],
-    include_paths: Optional[List[str]],
+    source: _ModelSource,
+    asm: Assembly,
+    part: Part,
+    variables: dict[str, Any],
+    include_paths: list[str] | None,
 ) -> str:
     hasher = hashlib.sha256()
     _hash_field(hasher, source.text.encode())
@@ -4012,8 +4234,11 @@ def _part_cache_key(
 
 
 def _export_part_sync(
-    source: _ModelSource, asm: Assembly, part: Part, variables: Dict[str, Any],
-    include_paths: Optional[List[str]],
+    source: _ModelSource,
+    asm: Assembly,
+    part: Part,
+    variables: dict[str, Any],
+    include_paths: list[str] | None,
 ) -> ExportedPart:
     """Export one placed part to the on-disk mesh cache (or reuse it)."""
     from .wrappers import build_wrapper
@@ -4028,10 +4253,15 @@ def _export_part_sync(
             data = json.loads(manifest.read_text())
             diag = Diagnostics(returncode=0)
             for rec in data.get("records", []):
-                diag.records.append(DiagnosticRecord(
-                    severity=rec.get("severity", "WARNING"), message=rec.get("message", ""),
-                    file=rec.get("file"), line=rec.get("line"), trace=list(rec.get("trace", [])),
-                ))
+                diag.records.append(
+                    DiagnosticRecord(
+                        severity=rec.get("severity", "WARNING"),
+                        message=rec.get("message", ""),
+                        file=rec.get("file"),
+                        line=rec.get("line"),
+                        trace=list(rec.get("trace", [])),
+                    )
+                )
             diag.statistics = dict(data.get("statistics") or {})
             return ExportedPart(part.name, stl, True, diag, key, empty=bool(data.get("empty")))
         except (OSError, ValueError):
@@ -4041,8 +4271,14 @@ def _export_part_sync(
     wpath = source.wrapper_file(wrapped)
     tmp_stl = Path(config.temp_dir) / f"part_{part.name}_{uuid.uuid4().hex[:8]}.stl"
     ev = _evaluate_scad(
-        None, str(wpath), str(tmp_stl), None, None,
-        source.include_paths_for_wrapper(include_paths), "export", f"part-{part.name}",
+        None,
+        str(wpath),
+        str(tmp_stl),
+        None,
+        None,
+        source.include_paths_for_wrapper(include_paths),
+        "export",
+        f"part-{part.name}",
     )
     _rebase_diagnostics(ev.diagnostics, wpath, wrapped, source.display_name)
     diag = ev.diagnostics
@@ -4061,19 +4297,28 @@ def _export_part_sync(
     except OSError:
         shutil.copyfile(tmp_stl, stl)
         tmp_stl.unlink(missing_ok=True)
-    manifest.write_text(json.dumps({
-        "part": part.name, "records": [r.to_dict() for r in diag.records],
-        "statistics": diag.statistics, "empty": empty,
-    }))
+    manifest.write_text(
+        json.dumps(
+            {
+                "part": part.name,
+                "records": [r.to_dict() for r in diag.records],
+                "statistics": diag.statistics,
+                "empty": empty,
+            }
+        )
+    )
     if config.cache.enabled:
         _evict_cache_if_needed()
     return ExportedPart(part.name, stl, False, diag, key, empty=empty)
 
 
 async def _export_parts(
-    source: _ModelSource, asm: Assembly, variables: Dict[str, Any],
-    include_paths: Optional[List[str]], ctx: Optional[Context] = None,
-) -> Dict[str, ExportedPart]:
+    source: _ModelSource,
+    asm: Assembly,
+    variables: dict[str, Any],
+    include_paths: list[str] | None,
+    ctx: Context | None = None,
+) -> dict[str, ExportedPart]:
     """Export every part in parallel under the render semaphore."""
     loop = asyncio.get_running_loop()
     semaphore = get_render_semaphore()
@@ -4085,8 +4330,8 @@ async def _export_parts(
             )
 
     results = await asyncio.gather(*[_one(p) for p in asm.parts], return_exceptions=True)
-    out: Dict[str, ExportedPart] = {}
-    errors: List[str] = []
+    out: dict[str, ExportedPart] = {}
+    errors: list[str] = []
     for part, res in zip(asm.parts, results, strict=False):
         if isinstance(res, Exception):
             errors.append(str(res))
@@ -4100,7 +4345,7 @@ async def _export_parts(
     return out
 
 
-_mesh_cache: Dict[str, Tuple[float, Any]] = {}
+_mesh_cache: dict[str, tuple[float, Any]] = {}
 _MESH_CACHE_MAX = 64
 
 
@@ -4123,9 +4368,15 @@ def _load_mesh(exported: ExportedPart) -> Any:
 
 
 def _resolve_check_inputs(
-    scad_content: Optional[str], scad_file: Optional[str], check_file: Optional[str],
-    parts: Any, frames: Any, quality: Any, variables: Any, checks: Any,
-) -> Tuple[Assembly, Optional[str], Optional[str], Dict[str, Any]]:
+    scad_content: str | None,
+    scad_file: str | None,
+    check_file: str | None,
+    parts: Any,
+    frames: Any,
+    quality: Any,
+    variables: Any,
+    checks: Any,
+) -> tuple[Assembly, str | None, str | None, dict[str, Any]]:
     """Build the Assembly from either a check file or inline arguments."""
     parsed_vars = parse_dict_param(variables, {})
     _validate_variable_names(parsed_vars)
@@ -4146,9 +4397,14 @@ def _resolve_check_inputs(
     else:
         if not parts:
             raise ValueError("parts=[{name, code, place?}] is required unless check_file is given")
-        asm = parse_assembly({
-            "parts": parts, "frames": frames or {}, "quality": {}, "checks": checks or [],
-        })
+        asm = parse_assembly(
+            {
+                "parts": parts,
+                "frames": frames or {},
+                "quality": {},
+                "checks": checks or [],
+            }
+        )
     if quality is not None:
         qv = _quality_to_variables(quality)
         for k, v in qv.items():
@@ -4163,25 +4419,37 @@ def _resolve_check_inputs(
 
 def _eval_in_model_scope(
     src: "_ModelSource",
-    exprs: List[str],
-    all_vars: Dict[str, Any],
-    include_paths: Optional[List[str]],
+    exprs: list[str],
+    all_vars: dict[str, Any],
+    include_paths: list[str] | None,
     tag: str,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Evaluate SCAD expressions in the model's scope; one CSG-mode run, no CGAL."""
     from .wrappers import build_wrapper, collect_eval_results
 
-    wrapped = build_wrapper(src.text, all_vars, extra_body="\n".join(
-        f'echo("__OPENSCAD_MCP_EVAL__", {i}, ({e}));' for i, e in enumerate(exprs)
-    ))
+    wrapped = build_wrapper(
+        src.text,
+        all_vars,
+        extra_body="\n".join(
+            f'echo("__OPENSCAD_MCP_EVAL__", {i}, ({e}));' for i, e in enumerate(exprs)
+        ),
+    )
     wpath = src.wrapper_file(wrapped)
     null_output = "NUL" if platform.system() == "Windows" else "/dev/null"
-    ev = _evaluate_scad(None, str(wpath), null_output, "csg", None,
-                        src.include_paths_for_wrapper(include_paths), "validation", tag)
+    ev = _evaluate_scad(
+        None,
+        str(wpath),
+        null_output,
+        "csg",
+        None,
+        src.include_paths_for_wrapper(include_paths),
+        "validation",
+        tag,
+    )
     return collect_eval_results(ev.diagnostics.echo_output, len(exprs))
 
 
-def _fn_of(all_vars: Dict[str, Any]) -> Optional[int]:
+def _fn_of(all_vars: dict[str, Any]) -> int | None:
     v = all_vars.get("$fn")
     try:
         return int(v) if v is not None else None
@@ -4189,7 +4457,7 @@ def _fn_of(all_vars: Dict[str, Any]) -> Optional[int]:
         return None
 
 
-def _quality_from_features(features_by_part: Dict[str, Any], names: Sequence[str], fn: Optional[int]):
+def _quality_from_features(features_by_part: dict[str, Any], names: Sequence[str], fn: int | None):
     from .checks import Quality
 
     samples = []
@@ -4206,8 +4474,11 @@ def _quality_from_features(features_by_part: Dict[str, Any], names: Sequence[str
 
 
 def _csg_dump_sync(
-    source: _ModelSource, asm: Assembly, part: Part, variables: Dict[str, Any],
-    include_paths: Optional[List[str]],
+    source: _ModelSource,
+    asm: Assembly,
+    part: Part,
+    variables: dict[str, Any],
+    include_paths: list[str] | None,
 ) -> str:
     """The evaluated CSG tree of one placed part (assembly frame)."""
     from .wrappers import build_wrapper
@@ -4228,17 +4499,21 @@ def _csg_dump_sync(
     out = Path(config.temp_dir) / f"csg_{part.name}_{uuid.uuid4().hex[:8]}.csg"
     try:
         ev = _evaluate_scad(
-            None, str(wpath), str(out), None, None,
-            source.include_paths_for_wrapper(include_paths), "export", f"csg-{part.name}",
+            None,
+            str(wpath),
+            str(out),
+            None,
+            None,
+            source.include_paths_for_wrapper(include_paths),
+            "export",
+            f"csg-{part.name}",
         )
         if ev.output_path is None:
             return ""
         text = ev.output_path.read_text(encoding="utf-8", errors="replace")
         if config.cache.enabled:
-            try:
+            with contextlib.suppress(OSError):
                 cached.write_text(text, encoding="utf-8")
-            except OSError:
-                pass
             _evict_cache_if_needed()
         return text
     finally:
@@ -4247,9 +4522,12 @@ def _csg_dump_sync(
 
 
 async def _features_for_parts(
-    source: _ModelSource, asm: Assembly, variables: Dict[str, Any],
-    include_paths: Optional[List[str]], names: Optional[Sequence[str]] = None,
-) -> Dict[str, Any]:
+    source: _ModelSource,
+    asm: Assembly,
+    variables: dict[str, Any],
+    include_paths: list[str] | None,
+    names: Sequence[str] | None = None,
+) -> dict[str, Any]:
     from . import csgfeatures
 
     loop = asyncio.get_running_loop()
@@ -4274,31 +4552,31 @@ async def _features_for_parts(
 
 @mcp.tool()
 async def check(
-    scad_content: Optional[str] = None,
-    scad_file: Optional[str] = None,
-    check_file: Optional[str] = None,
+    scad_content: str | None = None,
+    scad_file: str | None = None,
+    check_file: str | None = None,
     mode: str = "interference",
-    parts: Optional[List[Dict[str, Any]]] = None,
-    frames: Optional[Dict[str, Any]] = None,
+    parts: list[dict[str, Any]] | None = None,
+    frames: dict[str, Any] | None = None,
     pairs: Any = "all",
     tolerance_mm: float = 0.0,
-    min_mm: Optional[float] = None,
-    kind: Optional[str] = None,
-    moving: Optional[str] = None,
-    axis: Optional[List[float]] = None,
-    center: Optional[List[float]] = None,
-    vector: Optional[List[float]] = None,
-    range: Optional[List[float]] = None,
+    min_mm: float | None = None,
+    kind: str | None = None,
+    moving: str | None = None,
+    axis: list[float] | None = None,
+    center: list[float] | None = None,
+    vector: list[float] | None = None,
+    range: list[float] | None = None,
     steps: int = 36,
     against: Any = "all",
-    checks: Optional[List[Dict[str, Any]]] = None,
+    checks: list[dict[str, Any]] | None = None,
     quality: Any = None,
-    variables: Optional[Dict[str, Any]] = None,
-    include_paths: Optional[List[str]] = None,
+    variables: dict[str, Any] | None = None,
+    include_paths: list[str] | None = None,
     volume: bool = False,
     response_format: str = "concise",
-    ctx: Optional[Context] = None,
-) -> Dict[str, Any]:
+    ctx: Context | None = None,
+) -> dict[str, Any]:
     """
     Relations between named parts, exported separately (never unioned),
     cached, in the assembly frame. parts=[{name, code, place?, frame?,
@@ -4324,14 +4602,16 @@ async def check(
     mode = (mode or "interference").lower()
     try:
         if mode not in ("interference", "clearance", "contact", "alignment", "motion", "rules"):
-            raise ValueError("mode must be one of: interference, clearance, contact, alignment, motion, rules")
+            raise ValueError(
+                "mode must be one of: interference, clearance, contact, alignment, motion, rules"
+            )
         asm, scad_content, scad_file, all_vars = _resolve_check_inputs(
             scad_content, scad_file, check_file, parts, frames, quality, variables, checks
         )
         _validate_include_paths(include_paths)
         detailed = (response_format or "concise").lower() == "detailed"
 
-        timings: Dict[str, float] = {}
+        timings: dict[str, float] = {}
         with _ModelSource(scad_content, scad_file, "check") as src:
             # Expression-valued numbers ("[BOLT_R, 0, BASE_H]") in rules and
             # motion blocks are evaluated in the model's scope first, so the
@@ -4340,8 +4620,13 @@ async def check(
             if slots:
                 t1 = time.time()
                 values = await asyncio.get_running_loop().run_in_executor(
-                    None, _eval_in_model_scope, src, [sl.expr for sl in slots], all_vars,
-                    include_paths, "expr",
+                    None,
+                    _eval_in_model_scope,
+                    src,
+                    [sl.expr for sl in slots],
+                    all_vars,
+                    include_paths,
+                    "expr",
                 )
                 apply_expression_values(slots, values)
                 timings["expressions_s"] = round(time.time() - t1, 3)
@@ -4357,7 +4642,7 @@ async def check(
             # sets the tessellation error bound on every distance; it is
             # cached with the part mesh, so it is cheap after the first run.
             need_features = True
-            features_by_part: Dict[str, Any] = {}
+            features_by_part: dict[str, Any] = {}
             if need_features:
                 t1 = time.time()
                 try:
@@ -4370,10 +4655,10 @@ async def check(
 
             loop = asyncio.get_running_loop()
 
-            def predicate_runner(exprs: List[str]) -> List[Dict[str, Any]]:
+            def predicate_runner(exprs: list[str]) -> list[dict[str, Any]]:
                 return _eval_in_model_scope(src, exprs, all_vars, include_paths, "pred")
 
-            def feature_provider() -> Dict[str, Any]:
+            def feature_provider() -> dict[str, Any]:
                 from . import csgfeatures
 
                 return csgfeatures.align_features(
@@ -4381,19 +4666,32 @@ async def check(
                     tolerance_mm=float(tolerance_mm or 0.2),
                 )
 
-            def volume_cross_check(a: str, b: str) -> Optional[float]:
+            def volume_cross_check(a: str, b: str) -> float | None:
                 if not volume:
                     return None
                 from .wrappers import build_wrapper as _bw
 
-                body = ("!intersection() {\n    " + asm.part_statement(asm.part(a)) + "\n    "
-                        + asm.part_statement(asm.part(b)) + "\n}\n")
+                body = (
+                    "!intersection() {\n    "
+                    + asm.part_statement(asm.part(a))
+                    + "\n    "
+                    + asm.part_statement(asm.part(b))
+                    + "\n}\n"
+                )
                 wrapped = _bw(src.text, all_vars, extra_body=body)
                 wpath = src.wrapper_file(wrapped)
                 out = Path(get_config().temp_dir) / f"ix_{uuid.uuid4().hex[:8]}.stl"
                 try:
-                    ev = _evaluate_scad(None, str(wpath), str(out), None, None,
-                                        src.include_paths_for_wrapper(include_paths), "export", "ix")
+                    ev = _evaluate_scad(
+                        None,
+                        str(wpath),
+                        str(out),
+                        None,
+                        None,
+                        src.include_paths_for_wrapper(include_paths),
+                        "export",
+                        "ix",
+                    )
                     if ev.output_path is None:
                         return 0.0
                     from . import mesh as meshlib
@@ -4403,20 +4701,23 @@ async def check(
                     if out.exists():
                         out.unlink()
 
-            def printability_provider(name: str, rule: Dict[str, Any]) -> Dict[str, Any]:
+            def printability_provider(name: str, rule: dict[str, Any]) -> dict[str, Any]:
                 from . import printability
 
                 part = asm.part(name)
                 orientation = (part.print or {}).get("orientation") or rule.get("orientation")
                 return printability.analyze(
-                    meshes[name].triangles, orientation=orientation,
+                    meshes[name].triangles,
+                    orientation=orientation,
                     overhang_deg=float(rule.get("max_overhang_deg", 45)),
                     nozzle_mm=float(rule.get("nozzle_mm", 0.4)),
                     layer_height_mm=rule.get("layer_height_mm"),
                 ).to_dict(detailed=False)
 
             engine = RuleEngine(
-                asm, meshes, qual,
+                asm,
+                meshes,
+                qual,
                 predicate_runner=predicate_runner,
                 feature_provider=feature_provider if features_by_part else None,
                 printability_provider=printability_provider,
@@ -4426,12 +4727,14 @@ async def check(
             if mode == "rules":
                 rules = asm.checks
                 if not rules:
-                    raise ValueError("no checks: give check_file with a 'checks:' list or checks=[...]")
+                    raise ValueError(
+                        "no checks: give check_file with a 'checks:' list or checks=[...]"
+                    )
                 t1 = time.time()
                 rows = await loop.run_in_executor(None, engine.run, rules)
                 timings["rules_s"] = round(time.time() - t1, 3)
             else:
-                rule: Dict[str, Any] = {"rule": mode, "pairs": pairs}
+                rule: dict[str, Any] = {"rule": mode, "pairs": pairs}
                 if mode == "interference":
                     rule["tolerance_mm"] = float(tolerance_mm)
                 elif mode == "clearance":
@@ -4445,34 +4748,49 @@ async def check(
                 elif mode == "motion":
                     if not moving:
                         raise ValueError("mode=motion needs moving=<part name>")
-                    rule = {"rule": "sweep", "moving": moving, "against": against, "steps": int(steps)}
+                    rule = {
+                        "rule": "sweep",
+                        "moving": moving,
+                        "against": against,
+                        "steps": int(steps),
+                    }
                     if vector:
-                        rule.update({"type": "translate", "vector": vector, "range_mm": range or [0, 10]})
+                        rule.update(
+                            {"type": "translate", "vector": vector, "range_mm": range or [0, 10]}
+                        )
                     else:
-                        rule.update({"type": "rotate", "axis": axis or [0, 0, 1],
-                                     "center": center or [0, 0, 0], "range_deg": range or [0, 360]})
+                        rule.update(
+                            {
+                                "type": "rotate",
+                                "axis": axis or [0, 0, 1],
+                                "center": center or [0, 0, 0],
+                                "range_deg": range or [0, 360],
+                            }
+                        )
                 t1 = time.time()
                 rows = await loop.run_in_executor(None, engine.run, [rule])
                 timings["rules_s"] = round(time.time() - t1, 3)
 
         for name in empties:
-            rows.append({
-                "rule": mode if mode != "rules" else "parts",
-                "subject": [name],
-                "status": "UNRESOLVED",
-                "state": "empty",
-                "note": (
-                    f"part '{name}' produced no geometry (unknown module, empty difference, "
-                    "or geometry guarded by $preview); no relation involving it was checked"
-                ),
-            })
+            rows.append(
+                {
+                    "rule": mode if mode != "rules" else "parts",
+                    "subject": [name],
+                    "status": "UNRESOLVED",
+                    "state": "empty",
+                    "note": (
+                        f"part '{name}' produced no geometry (unknown module, empty difference, "
+                        "or geometry guarded by $preview); no relation involving it was checked"
+                    ),
+                }
+            )
         if not detailed:
             for r in rows:
                 r.pop("closest", None)
                 if r.get("status") == "PASS" and r.get("rule") in ("interference", "clearance"):
                     r.pop("normal", None)
         summary = summarize(rows)
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "success": True,
             "mode": mode,
             "units": "mm",
@@ -4510,13 +4828,25 @@ async def check(
 # ============================================================================
 
 _BOX_ANCHORS = [
-    "CENTER", "TOP", "BOTTOM", "LEFT", "RIGHT", "FRONT", "BACK",
-    "TOP+LEFT", "TOP+RIGHT", "TOP+FRONT", "TOP+BACK",
-    "BOTTOM+LEFT", "BOTTOM+RIGHT", "BOTTOM+FRONT", "BOTTOM+BACK",
+    "CENTER",
+    "TOP",
+    "BOTTOM",
+    "LEFT",
+    "RIGHT",
+    "FRONT",
+    "BACK",
+    "TOP+LEFT",
+    "TOP+RIGHT",
+    "TOP+FRONT",
+    "TOP+BACK",
+    "BOTTOM+LEFT",
+    "BOTTOM+RIGHT",
+    "BOTTOM+FRONT",
+    "BOTTOM+BACK",
 ]
 
 
-def _anchor_probe_body(asm: Assembly, part: Part, names: List[str]) -> str:
+def _anchor_probe_body(asm: Assembly, part: Part, names: list[str]) -> str:
     """Children of the part's module that echo every anchor's frame.
 
     Runs with the model composed by ``include`` (the wrapper), so BOSL2's
@@ -4529,8 +4859,8 @@ def _anchor_probe_body(asm: Assembly, part: Part, names: List[str]) -> str:
         expr = n if n in _BOX_ANCHORS else f'"{n}"'
         lines.append(
             f'echo("__ANCHOR__", "{n}", _find_anchor({expr}, $parent_geom)[1], '
-            f'_find_anchor({expr}, $parent_geom)[2], '
-            f'apply($transform, _find_anchor({expr}, $parent_geom)[1]));'
+            f"_find_anchor({expr}, $parent_geom)[2], "
+            f"apply($transform, _find_anchor({expr}, $parent_geom)[1]));"
         )
     children = "\n        ".join(lines)
     placement = asm.placement_expr(part)
@@ -4539,7 +4869,7 @@ def _anchor_probe_body(asm: Assembly, part: Part, names: List[str]) -> str:
     )
 
 
-def _parse_anchor_echo(echo_lines: List[str]) -> List[Dict[str, Any]]:
+def _parse_anchor_echo(echo_lines: list[str]) -> list[dict[str, Any]]:
     from .wrappers import parse_echo_values
 
     out = []
@@ -4553,40 +4883,42 @@ def _parse_anchor_echo(echo_lines: List[str]) -> List[Dict[str, Any]]:
         if len(vals) < 5 or vals[0] != "__ANCHOR__":
             continue
         name, local_pos, direction, world_pos = vals[1], vals[2], vals[3], vals[4]
-        out.append({
-            "name": name,
-            "local": local_pos,
-            "direction": direction,
-            "assembly": world_pos,
-        })
+        out.append(
+            {
+                "name": name,
+                "local": local_pos,
+                "direction": direction,
+                "assembly": world_pos,
+            }
+        )
     return out
 
 
 async def _measure_extended(
     mode: str,
-    scad_content: Optional[str],
-    scad_file: Optional[str],
-    parsed_vars: Dict[str, Any],
-    include_paths: Optional[List[str]],
+    scad_content: str | None,
+    scad_file: str | None,
+    parsed_vars: dict[str, Any],
+    include_paths: list[str] | None,
     parts: Any,
-    part: Optional[str],
+    part: str | None,
     points: Any,
     rays: Any,
     polyline: Any,
     orientation: Any,
     about_axis: Any,
-    material: Optional[str],
-    density_g_cm3: Optional[float],
+    material: str | None,
+    density_g_cm3: float | None,
     nozzle_mm: float,
-    layer_height_mm: Optional[float],
+    layer_height_mm: float | None,
     quality: Any,
     detailed: bool,
-    ctx: Optional[Context],
-) -> Dict[str, Any]:
+    ctx: Context | None,
+) -> dict[str, Any]:
     from . import geom
 
     loop = asyncio.get_running_loop()
-    result: Dict[str, Any] = {"success": True, "mode": mode, "units": "mm"}
+    result: dict[str, Any] = {"success": True, "mode": mode, "units": "mm"}
 
     # Assembly: explicit parts, or the whole model as one part named "model".
     if parts:
@@ -4598,33 +4930,46 @@ async def _measure_extended(
     all_vars = dict(parsed_vars)
     if quality is not None:
         all_vars.update(_quality_to_variables(quality))
-    asm = Assembly(parts=part_list, quality={k.lstrip("$"): v for k, v in all_vars.items() if k in ("$fn", "$fa", "$fs")})
+    asm = Assembly(
+        parts=part_list,
+        quality={k.lstrip("$"): v for k, v in all_vars.items() if k in ("$fn", "$fa", "$fs")},
+    )
     result["quality"] = {"fn": _fn_of(all_vars)}
 
     with _ModelSource(scad_content, scad_file, "measure") as src:
-        if mode in ("probe", "printability", "orientation") or (mode == "mass" and (parts or about_axis)):
+        if mode in ("probe", "printability", "orientation") or (
+            mode == "mass" and (parts or about_axis)
+        ):
             if not part_list:
                 # Whole model as one part: export via the plain measure path.
                 stats, diag = await loop.run_in_executor(
                     None, _measure_source, src, all_vars, include_paths
                 )
-                meshes = {"model": geom.Mesh(list(_triangles_of(src, all_vars, include_paths)), name="model")}
-                exported: Dict[str, ExportedPart] = {}
+                meshes = {
+                    "model": geom.Mesh(
+                        list(_triangles_of(src, all_vars, include_paths)), name="model"
+                    )
+                }
+                exported: dict[str, ExportedPart] = {}
             else:
                 exported = await _export_parts(src, asm, all_vars, include_paths, ctx)
                 meshes = {n: _load_mesh(e) for n, e in exported.items() if not e.empty}
             result["frame"] = "assembly" if part_list else "local"
 
         if mode == "probe":
-            probe_meshes = {n: m for n, m in meshes.items() if not (part_list and asm.part(n).ghost)}
+            probe_meshes = {
+                n: m for n, m in meshes.items() if not (part_list and asm.part(n).ghost)
+            }
             out_points = []
             for p in parse_list_param(points, []) if points else []:
                 pt = tuple(float(v) for v in p[:3])
                 res = geom.classify_point(probe_meshes, pt)
-                out_points.append({"at": list(pt), "state": res["state"], "parts": res["parts"]}
-                                  | ({"winding": res.get("winding")} if detailed else {}))
+                out_points.append(
+                    {"at": list(pt), "state": res["state"], "parts": res["parts"]}
+                    | ({"winding": res.get("winding")} if detailed else {})
+                )
             out_rays = []
-            for r in (rays or []):
+            for r in rays or []:
                 if isinstance(r, dict):
                     origin = tuple(float(v) for v in r["origin"])
                     direction = tuple(float(v) for v in r["direction"])
@@ -4634,17 +4979,23 @@ async def _measure_extended(
                     direction = tuple(float(v) for v in r[3:6])
                     max_d = r[6] if len(r) > 6 else None
                 hits = geom.ray_cast_parts(probe_meshes, origin, direction, max_d)
-                out_rays.append({
-                    "origin": list(origin), "direction": list(direction),
-                    "first_hit": None if not hits else {
-                        "part": hits[0].part, "distance_mm": round(hits[0].t, 4),
-                        "point": [round(v, 4) for v in hits[0].point],
-                    },
-                    "crossings": [
-                        {"part": h.part, "distance_mm": round(h.t, 4), "entering": h.entering}
-                        for h in hits[: (50 if detailed else 12)]
-                    ],
-                })
+                out_rays.append(
+                    {
+                        "origin": list(origin),
+                        "direction": list(direction),
+                        "first_hit": None
+                        if not hits
+                        else {
+                            "part": hits[0].part,
+                            "distance_mm": round(hits[0].t, 4),
+                            "point": [round(v, 4) for v in hits[0].point],
+                        },
+                        "crossings": [
+                            {"part": h.part, "distance_mm": round(h.t, 4), "entering": h.entering}
+                            for h in hits[: (50 if detailed else 12)]
+                        ],
+                    }
+                )
             out_polyline = None
             if polyline:
                 pts = [tuple(float(v) for v in p[:3]) for p in polyline]
@@ -4660,7 +5011,7 @@ async def _measure_extended(
 
             if part_list:
                 feats = await _features_for_parts(src, asm, all_vars, include_paths)
-                per: Dict[str, Any] = {}
+                per: dict[str, Any] = {}
                 for n, fs in feats.items():
                     per[n] = csgfeatures.to_dict(fs, detailed)
                 result["parts"] = per
@@ -4675,15 +5026,31 @@ async def _measure_extended(
                 out = Path(get_config().temp_dir) / f"csg_{uuid.uuid4().hex[:8]}.csg"
                 try:
                     ev = await loop.run_in_executor(
-                        None, _evaluate_scad, None, str(wpath), str(out), None, None,
-                        src.include_paths_for_wrapper(include_paths), "export", "csg",
+                        None,
+                        _evaluate_scad,
+                        None,
+                        str(wpath),
+                        str(out),
+                        None,
+                        None,
+                        src.include_paths_for_wrapper(include_paths),
+                        "export",
+                        "csg",
                     )
-                    text = ev.output_path.read_text(encoding="utf-8", errors="replace") if ev.output_path else ""
+                    text = (
+                        ev.output_path.read_text(encoding="utf-8", errors="replace")
+                        if ev.output_path
+                        else ""
+                    )
                 finally:
                     if out.exists():
                         out.unlink()
                 fs = csgfeatures.extract_features(text) if text else None
-                result.update(csgfeatures.to_dict(fs, detailed) if fs else {"features": [], "note": "no CSG output"})
+                result.update(
+                    csgfeatures.to_dict(fs, detailed)
+                    if fs
+                    else {"features": [], "note": "no CSG output"}
+                )
                 result["frame"] = "local"
                 del whole
             result["note"] = (
@@ -4707,7 +5074,9 @@ async def _measure_extended(
                     dens = p.density_g_cm3 or density_g_cm3
                     if p.mass_g is None and dens is None and not mat:
                         mat = "PLA"
-                    mp = massprops.mass_properties(tris, density_g_cm3=dens, material=mat, mass_g=p.mass_g)
+                    mp = massprops.mass_properties(
+                        tris, density_g_cm3=dens, material=mat, mass_g=p.mass_g
+                    )
                 entries.append((p.name, mp))
             if not entries:
                 raise ValueError("mode=mass over parts needs parts=[{name, code, material|mass_g}]")
@@ -4753,7 +5122,9 @@ async def _measure_extended(
             facts = await loop.run_in_executor(
                 None,
                 lambda: printability.analyze(
-                    tris, orientation=orientation, nozzle_mm=nozzle_mm,
+                    tris,
+                    orientation=orientation,
+                    nozzle_mm=nozzle_mm,
                     layer_height_mm=layer_height_mm,
                 ),
             )
@@ -4763,24 +5134,36 @@ async def _measure_extended(
 
         if mode == "anchors":
             if not part_list:
-                raise ValueError("mode=anchors needs part=\"module();\" or parts=[...] (BOSL2 attachables)")
+                raise ValueError(
+                    'mode=anchors needs part="module();" or parts=[...] (BOSL2 attachables)'
+                )
             from .wrappers import build_wrapper
 
             names = list(_BOX_ANCHORS)
             extra_names = parse_list_param(points, []) if points else []
             names += [str(n) for n in extra_names]
-            per_part: Dict[str, Any] = {}
+            per_part: dict[str, Any] = {}
             for p in part_list:
-                wrapped = build_wrapper(src.text, all_vars, extra_body=_anchor_probe_body(asm, p, names))
+                wrapped = build_wrapper(
+                    src.text, all_vars, extra_body=_anchor_probe_body(asm, p, names)
+                )
                 wpath = src.wrapper_file(wrapped)
                 null_output = "NUL" if platform.system() == "Windows" else "/dev/null"
                 ev = await loop.run_in_executor(
-                    None, _evaluate_scad, None, str(wpath), null_output, "csg", None,
-                    src.include_paths_for_wrapper(include_paths), "validation", "anchors",
+                    None,
+                    _evaluate_scad,
+                    None,
+                    str(wpath),
+                    null_output,
+                    "csg",
+                    None,
+                    src.include_paths_for_wrapper(include_paths),
+                    "validation",
+                    "anchors",
                 )
                 _rebase_diagnostics(ev.diagnostics, wpath, wrapped, src.display_name)
                 anchors = _parse_anchor_echo(ev.diagnostics.echo_output)
-                entry: Dict[str, Any] = {"anchors": anchors, "frame": "assembly"}
+                entry: dict[str, Any] = {"anchors": anchors, "frame": "assembly"}
                 if not anchors:
                     entry["note"] = (
                         "no anchors echoed: the module is not a BOSL2 attachable, or BOSL2 is "
@@ -4792,14 +5175,14 @@ async def _measure_extended(
             result["parts"] = per_part
             result["note"] = (
                 "positions are in the assembly frame because the model is composed with include; "
-                "extra anchor names can be passed via points=[\"name\", ...]"
+                'extra anchor names can be passed via points=["name", ...]'
             )
             return result
 
         raise ValueError(f"unhandled mode {mode}")
 
 
-def _triangles_of(src: _ModelSource, variables: Dict[str, Any], include_paths: Optional[List[str]]):
+def _triangles_of(src: _ModelSource, variables: dict[str, Any], include_paths: list[str] | None):
     """Triangles of the whole model via a temporary STL export."""
     from . import mesh as meshlib
 
@@ -4807,8 +5190,14 @@ def _triangles_of(src: _ModelSource, variables: Dict[str, Any], include_paths: O
     out = Path(config.temp_dir) / f"whole_{uuid.uuid4().hex[:8]}.stl"
     try:
         ev = _evaluate_scad(
-            src.scad_content, None if src.scad_content else src.scad_file, str(out), None,
-            variables, include_paths, "export", "whole",
+            src.scad_content,
+            None if src.scad_content else src.scad_file,
+            str(out),
+            None,
+            variables,
+            include_paths,
+            "export",
+            "whole",
         )
         if ev.output_path is None:
             return []
@@ -4818,11 +5207,14 @@ def _triangles_of(src: _ModelSource, variables: Dict[str, Any], include_paths: O
             out.unlink()
 
 
-
 async def _predicate_sweep(
-    scad_content: Optional[str], scad_file: Optional[str], parsed_vars: Dict[str, Any],
-    include_paths: Optional[List[str]], exprs: List[str], sweep: Dict[str, Any],
-) -> Dict[str, Any]:
+    scad_content: str | None,
+    scad_file: str | None,
+    parsed_vars: dict[str, Any],
+    include_paths: list[str] | None,
+    exprs: list[str],
+    sweep: dict[str, Any],
+) -> dict[str, Any]:
     """Re-evaluate predicates across values of one variable; report the crossing."""
     from .wrappers import collect_eval_results, eval_wrapper
 
@@ -4837,7 +5229,7 @@ async def _predicate_sweep(
     semaphore = get_render_semaphore()
     null_output = "NUL" if platform.system() == "Windows" else "/dev/null"
 
-    async def _point(value: Any) -> Dict[str, Any]:
+    async def _point(value: Any) -> dict[str, Any]:
         vars_ = dict(parsed_vars)
         vars_[variable] = value
         with _ModelSource(scad_content, scad_file, "sweep") as src:
@@ -4845,8 +5237,16 @@ async def _predicate_sweep(
             wpath = src.wrapper_file(wrapped)
             async with semaphore:
                 ev = await loop.run_in_executor(
-                    None, _evaluate_scad, None, str(wpath), null_output, "csg", None,
-                    src.include_paths_for_wrapper(include_paths), "validation", "sweep",
+                    None,
+                    _evaluate_scad,
+                    None,
+                    str(wpath),
+                    null_output,
+                    "csg",
+                    None,
+                    src.include_paths_for_wrapper(include_paths),
+                    "validation",
+                    "sweep",
                 )
             _rebase_diagnostics(ev.diagnostics, wpath, wrapped, src.display_name)
         res = collect_eval_results(ev.diagnostics.echo_output, len(exprs))
@@ -4880,7 +5280,7 @@ async def _predicate_sweep(
     }
 
 
-def _apply_lint_fixes(path: Path, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _apply_lint_fixes(path: Path, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply safe rewrite plans from the BOSL2 lint to the model file."""
     from . import analysis
 
@@ -4915,15 +5315,21 @@ def _apply_lint_fixes(path: Path, findings: List[Dict[str, Any]]) -> List[Dict[s
 
 async def _validate_printability(
     scad_content, scad_file, variables, include_paths, orientation, profile, ctx
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Thin rules layer over measure(mode=printability) facts."""
     from . import reference as ref
 
     facts = await _tool_fn(measure)(
-        scad_content=scad_content, scad_file=scad_file, mode="printability",
-        variables=variables, include_paths=include_paths, orientation=orientation,
+        scad_content=scad_content,
+        scad_file=scad_file,
+        mode="printability",
+        variables=variables,
+        include_paths=include_paths,
+        orientation=orientation,
         nozzle_mm=float(profile.get("nozzle_mm", 0.4)),
-        layer_height_mm=profile.get("layer_height_mm"), response_format="detailed", ctx=ctx,
+        layer_height_mm=profile.get("layer_height_mm"),
+        response_format="detailed",
+        ctx=ctx,
     )
     if not facts.get("success"):
         return facts
@@ -4935,57 +5341,93 @@ async def _validate_printability(
     }
     try:
         dfm = ref.lookup("dfm")
-        source = "; ".join(sorted({e.get("source", "") for e in dfm.get("entries", []) if e.get("source")}))[:300]
+        source = "; ".join(
+            sorted({e.get("source", "") for e in dfm.get("entries", []) if e.get("source")})
+        )[:300]
     except Exception:
         source = ""
-    findings: List[Dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
     over = facts.get("overhang") or {}
     for patch in over.get("patches", []):
         reach = patch.get("max_unsupported_reach_mm")
         if reach is not None and reach > thresholds["max_unsupported_reach_mm"]:
-            findings.append({
-                "code": "unsupported_reach", "severity": "warning",
-                "magnitude": {"max_unsupported_reach_mm": reach, "limit_mm": thresholds["max_unsupported_reach_mm"]},
-                "at": patch.get("center"), "detail": f"overhang patch of {patch.get('area_mm2')} mm2 at z={patch.get('z_min')}",
-            })
+            findings.append(
+                {
+                    "code": "unsupported_reach",
+                    "severity": "warning",
+                    "magnitude": {
+                        "max_unsupported_reach_mm": reach,
+                        "limit_mm": thresholds["max_unsupported_reach_mm"],
+                    },
+                    "at": patch.get("center"),
+                    "detail": f"overhang patch of {patch.get('area_mm2')} mm2 at z={patch.get('z_min')}",
+                }
+            )
     th = facts.get("thickness") or {}
     below = th.get("area_below_nozzle_mm2")
     if below and below > 0:
-        findings.append({
-            "code": "feature_thinner_than_nozzle", "severity": "error",
-            "magnitude": {"area_mm2": below, "min_mm": th.get("min"), "nozzle_mm": thresholds["nozzle_mm"]},
-            "at": th.get("min_location"),
-        })
+        findings.append(
+            {
+                "code": "feature_thinner_than_nozzle",
+                "severity": "error",
+                "magnitude": {
+                    "area_mm2": below,
+                    "min_mm": th.get("min"),
+                    "nozzle_mm": thresholds["nozzle_mm"],
+                },
+                "at": th.get("min_location"),
+            }
+        )
     p05 = th.get("p05")
     if p05 is not None and p05 < thresholds["min_wall_mm"]:
-        findings.append({
-            "code": "thin_wall", "severity": "warning",
-            "magnitude": {"p05_mm": p05, "min_wall_mm": thresholds["min_wall_mm"]}, "at": th.get("min_location"),
-        })
+        findings.append(
+            {
+                "code": "thin_wall",
+                "severity": "warning",
+                "magnitude": {"p05_mm": p05, "min_wall_mm": thresholds["min_wall_mm"]},
+                "at": th.get("min_location"),
+            }
+        )
     islands = facts.get("islands") or {}
     if isinstance(islands, dict) and islands.get("count"):
-        findings.append({
-            "code": "unsupported_islands", "severity": "warning",
-            "magnitude": {"count": islands["count"]},
-            "detail": (islands.get("list") or islands.get("items") or [])[:3],
-        })
+        findings.append(
+            {
+                "code": "unsupported_islands",
+                "severity": "warning",
+                "magnitude": {"count": islands["count"]},
+                "detail": (islands.get("list") or islands.get("items") or [])[:3],
+            }
+        )
     return {
-        "success": True, "mode": "printability",
+        "success": True,
+        "mode": "printability",
         "valid": not any(f["severity"] == "error" for f in findings),
-        "findings": findings, "thresholds": thresholds, "thresholds_source": source,
-        "orientation": facts.get("orientation"), "bed_contact_area_mm2": facts.get("bed_contact_area_mm2"),
+        "findings": findings,
+        "thresholds": thresholds,
+        "thresholds_source": source,
+        "orientation": facts.get("orientation"),
+        "bed_contact_area_mm2": facts.get("bed_contact_area_mm2"),
         "overhang_area_mm2": over.get("area_mm2"),
     }
 
 
 async def _export_parts_bundle(
-    scad_content, scad_file, output_format, output_path, variables, include_paths, parts,
-    quality, ctx,
-) -> Dict[str, Any]:
+    scad_content,
+    scad_file,
+    output_format,
+    output_path,
+    variables,
+    include_paths,
+    parts,
+    quality,
+    ctx,
+) -> dict[str, Any]:
     """Per-part export of an assembly into one 3MF or a directory of STLs."""
     fmt = (output_format or "3mf").lower()
     if fmt not in ("3mf", "stl"):
-        raise ValueError("parts export supports output_format='3mf' (one file) or 'stl' (a directory)")
+        raise ValueError(
+            "parts export supports output_format='3mf' (one file) or 'stl' (a directory)"
+        )
     asm, scad_content, scad_file, all_vars = _resolve_check_inputs(
         scad_content, scad_file, None, parts, None, quality, variables, None
     )
@@ -5000,7 +5442,11 @@ async def _export_parts_bundle(
         from .analysis import assign_colors
 
         colors = assign_colors([p.name for p in asm.parts])
-        target = Path(output_path) if output_path else temp_dir_path / "exports" / f"assembly_{uuid.uuid4().hex[:8]}.3mf"
+        target = (
+            Path(output_path)
+            if output_path
+            else temp_dir_path / "exports" / f"assembly_{uuid.uuid4().hex[:8]}.3mf"
+        )
         _check_allowed_path(target.parent, "Output directory")
         target.parent.mkdir(parents=True, exist_ok=True)
         objs = []
@@ -5009,24 +5455,57 @@ async def _export_parts_bundle(
             if e.empty:
                 manifest.append({"name": p.name, "empty": True})
                 continue
-            objs.append({"name": p.name, "stl": str(e.stl_path), "color": p.color or colors.get(p.name)})
-            manifest.append({"name": p.name, "cached": e.cached, "color": p.color or colors.get(p.name),
-                             "ghost": p.ghost, "frame": "assembly"})
+            objs.append(
+                {"name": p.name, "stl": str(e.stl_path), "color": p.color or colors.get(p.name)}
+            )
+            manifest.append(
+                {
+                    "name": p.name,
+                    "cached": e.cached,
+                    "color": p.color or colors.get(p.name),
+                    "ghost": p.ghost,
+                    "frame": "assembly",
+                }
+            )
         info = threemf.write_3mf_from_stls(str(target), objs)
-        return {"success": True, "format": "3mf", "output_path": str(target), "objects": manifest,
-                "object_count": info.get("object_count"), "triangle_count": info.get("triangle_count"),
-                "file_size_bytes": target.stat().st_size, "frame": "assembly"}
-    out_dir = Path(output_path) if output_path else temp_dir_path / "exports" / f"parts_{uuid.uuid4().hex[:8]}"
+        return {
+            "success": True,
+            "format": "3mf",
+            "output_path": str(target),
+            "objects": manifest,
+            "object_count": info.get("object_count"),
+            "triangle_count": info.get("triangle_count"),
+            "file_size_bytes": target.stat().st_size,
+            "frame": "assembly",
+        }
+    out_dir = (
+        Path(output_path)
+        if output_path
+        else temp_dir_path / "exports" / f"parts_{uuid.uuid4().hex[:8]}"
+    )
     _check_allowed_path(out_dir, "Output directory")
     out_dir.mkdir(parents=True, exist_ok=True)
     for p in asm.parts:
         e = exported[p.name]
         dest = out_dir / f"{p.name}.stl"
         shutil.copyfile(e.stl_path, dest)
-        manifest.append({"name": p.name, "path": str(dest), "cached": e.cached, "empty": e.empty,
-                         "frame": "assembly"})
-    return {"success": True, "format": "stl", "output_path": str(out_dir), "objects": manifest,
-            "frame": "assembly"}
+        manifest.append(
+            {
+                "name": p.name,
+                "path": str(dest),
+                "cached": e.cached,
+                "empty": e.empty,
+                "frame": "assembly",
+            }
+        )
+    return {
+        "success": True,
+        "format": "stl",
+        "output_path": str(out_dir),
+        "objects": manifest,
+        "frame": "assembly",
+    }
+
 
 # ============================================================================
 # MCP Resources
@@ -5048,7 +5527,7 @@ def cheatsheet_resource() -> str:
 
 
 @mcp.resource("openscad://reference/{topic}", mime_type="application/json")
-def reference_resource(topic: str) -> Dict[str, Any]:
+def reference_resource(topic: str) -> dict[str, Any]:
     """Engineering reference data for one topic (see the reference tool)."""
     from .reference import lookup
 
@@ -5056,7 +5535,7 @@ def reference_resource(topic: str) -> Dict[str, Any]:
 
 
 @mcp.resource("resource://server/info")
-async def get_server_info() -> Dict[str, Any]:
+async def get_server_info() -> dict[str, Any]:
     """Get server configuration and capabilities."""
     config = get_config()
     # check_openscad is a FastMCP FunctionTool once decorated; call the
@@ -5074,9 +5553,8 @@ async def get_server_info() -> Dict[str, Any]:
         "cache_enabled": config.cache.enabled,
         "allowed_paths": config.security.allowed_paths,
         "path_validation_enabled": bool(config.security.allowed_paths),
-        "supported_formats": ["png"] + sorted(
-            _supported_export_formats(get_openscad_capabilities())
-        ),
+        "supported_formats": ["png"]
+        + sorted(_supported_export_formats(get_openscad_capabilities())),
     }
 
 
@@ -5097,7 +5575,7 @@ def _run_sync(coro: Any) -> Any:
         return pool.submit(asyncio.run, coro).result()
 
 
-def _cli_check(argv: List[str]) -> int:
+def _cli_check(argv: list[str]) -> int:
     """``openscad-mcp check <check_file> [--model f] [--fn N] [--json]`` -> exit code."""
     import argparse
 
@@ -5111,9 +5589,14 @@ def _cli_check(argv: List[str]) -> int:
     if args.allow:
         cfg = get_config()
         cfg.security.allowed_paths = list(args.allow)
-    result = _run_sync(_tool_fn(check)(
-        scad_file=args.model, check_file=args.check_file, mode="rules", quality=args.fn,
-    ))
+    result = _run_sync(
+        _tool_fn(check)(
+            scad_file=args.model,
+            check_file=args.check_file,
+            mode="rules",
+            quality=args.fn,
+        )
+    )
     if args.json:
         print(json.dumps(result, indent=1))
     else:
@@ -5125,10 +5608,14 @@ def _cli_check(argv: List[str]) -> int:
             mag = row.get("magnitude") or {}
             magtxt = " ".join(f"{k}={v}" for k, v in mag.items())
             note = row.get("note") or row.get("why") or ""
-            print(f"{row.get('status'):10s} {row.get('rule'):12s} {subj:30s} {row.get('state', ''):13s} {magtxt} {note}".rstrip())
+            print(
+                f"{row.get('status'):10s} {row.get('rule'):12s} {subj:30s} {row.get('state', ''):13s} {magtxt} {note}".rstrip()
+            )
         summ = result.get("summary", {})
-        print(f"pass {summ.get('pass', 0)}  fail {summ.get('fail', 0)}  unresolved {summ.get('unresolved', 0)}  "
-              f"({result.get('timing_s')} s, cache hits {result.get('cache', {}).get('hits')})")
+        print(
+            f"pass {summ.get('pass', 0)}  fail {summ.get('fail', 0)}  unresolved {summ.get('unresolved', 0)}  "
+            f"({result.get('timing_s')} s, cache hits {result.get('cache', {}).get('hits')})"
+        )
     return 3 if not result.get("success") else int(result.get("exit_code", 0))
 
 
@@ -5155,7 +5642,7 @@ def main():
             "scripts may read any file the server can. Set MCP_ALLOWED_PATHS or "
             "security.allowed_paths to confine reads to project directories."
         )
-    
+
     if config.server.transport == "stdio":
         mcp.run()
     else:

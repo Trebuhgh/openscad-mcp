@@ -144,7 +144,7 @@ def _normalize_mat4(transform: Mat4 | Sequence[float] | None, label: str) -> lis
 
     rows: list[list[float]]
     flat: list[float] | None = None
-    if all(isinstance(item, (int, float)) for item in transform):
+    if all(isinstance(item, int | float) for item in transform):
         flat = [float(item) for item in transform]  # type: ignore[arg-type]
     if flat is not None:
         if len(flat) not in (12, 16):
@@ -155,7 +155,7 @@ def _normalize_mat4(transform: Mat4 | Sequence[float] | None, label: str) -> lis
     else:
         rows = []
         for row in transform:
-            if isinstance(row, (int, float)) or len(row) != 4:
+            if isinstance(row, int | float) or len(row) != 4:
                 raise ValueError(f"{label} transform: every row must have 4 numbers, got {row!r}")
             rows.append([float(value) for value in row])
         if len(rows) not in (3, 4):

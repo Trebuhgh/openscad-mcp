@@ -19,7 +19,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # A part's code must be a module instantiation, optionally wrapped in
@@ -38,28 +38,28 @@ class AssemblyError(ValueError):
 @dataclass
 class Frame:
     name: str
-    parent: Optional[str] = None
-    lift: Optional[str] = None  # transform expression applied in the parent frame
+    parent: str | None = None
+    lift: str | None = None  # transform expression applied in the parent frame
 
 
 @dataclass
 class Part:
     name: str
     code: str
-    place: Optional[str] = None
+    place: str | None = None
     frame: str = WORLD
-    material: Optional[str] = None
-    density_g_cm3: Optional[float] = None
-    mass_g: Optional[float] = None
+    material: str | None = None
+    density_g_cm3: float | None = None
+    mass_g: float | None = None
     printed: bool = True
     ghost: bool = False
-    motion: Optional[Dict[str, Any]] = None
-    print: Optional[Dict[str, Any]] = None
-    color: Optional[str] = None
-    explode: Optional[List[float]] = None
+    motion: dict[str, Any] | None = None
+    print: dict[str, Any] | None = None
+    color: str | None = None
+    explode: list[float] | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {"name": self.name, "code": self.code}
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"name": self.name, "code": self.code}
         for key in (
             "place",
             "frame",
@@ -83,12 +83,12 @@ class Part:
 
 @dataclass
 class Assembly:
-    parts: List[Part]
-    frames: Dict[str, Frame] = field(default_factory=dict)
-    quality: Dict[str, Any] = field(default_factory=dict)
-    checks: List[Dict[str, Any]] = field(default_factory=list)
-    variables: Dict[str, Any] = field(default_factory=dict)
-    scad_file: Optional[str] = None
+    parts: list[Part]
+    frames: dict[str, Frame] = field(default_factory=dict)
+    quality: dict[str, Any] = field(default_factory=dict)
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    variables: dict[str, Any] = field(default_factory=dict)
+    scad_file: str | None = None
     version: int = 1
 
     def part(self, name: str) -> Part:
@@ -97,21 +97,21 @@ class Assembly:
                 return p
         raise AssemblyError(f"unknown part '{name}'; parts are: {[p.name for p in self.parts]}")
 
-    def names(self, include_ghosts: bool = True) -> List[str]:
+    def names(self, include_ghosts: bool = True) -> list[str]:
         return [p.name for p in self.parts if include_ghosts or not p.ghost]
 
     @property
-    def fn(self) -> Optional[int]:
+    def fn(self) -> int | None:
         val = self.quality.get("fn")
         return int(val) if val is not None else None
 
     # -- frames -------------------------------------------------------------
 
-    def frame_chain(self, frame_name: str) -> List[Frame]:
+    def frame_chain(self, frame_name: str) -> list[Frame]:
         """Frames from the root down to *frame_name* (root first)."""
-        chain: List[Frame] = []
+        chain: list[Frame] = []
         seen: set[str] = set()
-        current: Optional[str] = frame_name
+        current: str | None = frame_name
         while current is not None and current != WORLD:
             if current in seen:
                 raise AssemblyError(f"frame cycle at '{current}'")
@@ -169,15 +169,15 @@ class Assembly:
             sort_keys=True,
         )
 
-    def quality_variables(self) -> Dict[str, Any]:
+    def quality_variables(self) -> dict[str, Any]:
         """``$fn``/``$fa``/``$fs`` overrides implied by ``quality``."""
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for key in ("fn", "fa", "fs"):
             if self.quality.get(key) is not None:
                 out[f"${key}"] = self.quality[key]
         return out
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "version": self.version,
             "quality": dict(self.quality),
@@ -209,7 +209,7 @@ def _validate_code(name: str, code: str) -> str:
     return code
 
 
-def _validate_place(name: str, place: Optional[str]) -> Optional[str]:
+def _validate_place(name: str, place: str | None) -> str | None:
     if place is None:
         return None
     place = str(place).strip()
@@ -254,11 +254,11 @@ def _coerce_part(raw: Any, index: int) -> Part:
     return part
 
 
-def _opt_float(value: Any) -> Optional[float]:
+def _opt_float(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
-def _validate_motion(name: str, motion: Dict[str, Any]) -> None:
+def _validate_motion(name: str, motion: dict[str, Any]) -> None:
     kind = motion.get("type")
     if kind not in ("rotate", "translate"):
         raise AssemblyError(f"part '{name}': motion.type must be rotate or translate")
@@ -270,7 +270,7 @@ def _validate_motion(name: str, motion: Dict[str, Any]) -> None:
     _validate_expressions(motion, f"part '{name}' motion")
 
 
-def parse_parts(parts: Any) -> List[Part]:
+def parse_parts(parts: Any) -> list[Part]:
     """Accept the tool argument forms: list of dicts, dict name->code, JSON text."""
     if isinstance(parts, str):
         try:
@@ -283,7 +283,7 @@ def parse_parts(parts: Any) -> List[Part]:
         ]
     if not isinstance(parts, list) or not parts:
         raise AssemblyError("parts must be a non-empty list of {name, code, place?} objects")
-    out: List[Part] = []
+    out: list[Part] = []
     seen: set[str] = set()
     for i, raw in enumerate(parts):
         part = _coerce_part(raw, i)
@@ -294,8 +294,8 @@ def parse_parts(parts: Any) -> List[Part]:
     return out
 
 
-def parse_frames(raw: Any) -> Dict[str, Frame]:
-    frames: Dict[str, Frame] = {}
+def parse_frames(raw: Any) -> dict[str, Frame]:
+    frames: dict[str, Frame] = {}
     if not raw:
         return frames
     if not isinstance(raw, dict):
@@ -329,7 +329,7 @@ KNOWN_RULES = {
 }
 
 
-def _validate_check(rule: Dict[str, Any], index: int, part_names: List[str]) -> Dict[str, Any]:
+def _validate_check(rule: dict[str, Any], index: int, part_names: list[str]) -> dict[str, Any]:
     if not isinstance(rule, dict) or "rule" not in rule:
         raise AssemblyError(f"checks[{index}]: expected an object with a 'rule' key")
     kind = rule["rule"]
@@ -343,7 +343,7 @@ def _validate_check(rule: Dict[str, Any], index: int, part_names: List[str]) -> 
         if not isinstance(pairs, list):
             raise AssemblyError(f"checks[{index}]: pairs must be 'all' or a list of [a, b]")
         for pair in pairs:
-            if not (isinstance(pair, (list, tuple)) and len(pair) == 2):
+            if not (isinstance(pair, list | tuple) and len(pair) == 2):
                 raise AssemblyError(f"checks[{index}]: each pair must be [a, b]")
             for nm in pair:
                 if nm not in part_names:
@@ -360,7 +360,7 @@ def _validate_check(rule: Dict[str, Any], index: int, part_names: List[str]) -> 
     return rule
 
 
-def _validate_mass_rule(rule: Dict[str, Any], index: int, part_names: List[str]) -> None:
+def _validate_mass_rule(rule: dict[str, Any], index: int, part_names: list[str]) -> None:
     names = rule.get("parts")
     if names not in (None, "all"):
         if not isinstance(names, list) or not names:
@@ -381,7 +381,7 @@ def _validate_mass_rule(rule: Dict[str, Any], index: int, part_names: List[str])
     axis, point = rule.get("axis"), rule.get("point")
     if axis is not None and not isinstance(axis, str):
         if not (
-            isinstance(axis, (list, tuple))
+            isinstance(axis, list | tuple)
             and len(axis) == 2
             and all(_is_vec_or_expr(v, 3) for v in axis)
         ):
@@ -454,7 +454,7 @@ FORBIDDEN_IN_EXPRESSION = re.compile(r"\b(include|use|import|surface|echo|assert
 def _is_vec_or_expr(value: Any, length: int) -> bool:
     if isinstance(value, str):
         return True
-    return isinstance(value, (list, tuple)) and len(value) == length
+    return isinstance(value, list | tuple) and len(value) == length
 
 
 def _walk_expressions(container: Any, label: str):
@@ -477,7 +477,7 @@ def _walk_value(parent: Any, key: Any, val: Any, label: str):
             yield from _walk_value(val, i, item, f"{label}[{i}]")
 
 
-def _validate_expressions(container: Dict[str, Any], label: str) -> None:
+def _validate_expressions(container: dict[str, Any], label: str) -> None:
     for _parent, _key, expr, where in _walk_expressions(container, label):
         if not expr.strip():
             raise AssemblyError(f"{where}: empty expression")
@@ -496,12 +496,12 @@ class ExpressionSlot:
     key: Any  # the key or index in ``parent``
     expr: str
     label: str  # human-readable location, e.g. "checks[3].point[2]"
-    rule: Optional[Dict[str, Any]]  # the owning rule, if any (None for a motion block)
+    rule: dict[str, Any] | None  # the owning rule, if any (None for a motion block)
 
 
-def collect_expression_slots(asm: Assembly) -> List[ExpressionSlot]:
+def collect_expression_slots(asm: Assembly) -> list[ExpressionSlot]:
     """Every expression-valued number in the assembly's rules and motion blocks."""
-    slots: List[ExpressionSlot] = []
+    slots: list[ExpressionSlot] = []
     for i, rule in enumerate(asm.checks):
         for parent, key, expr, label in _walk_expressions(rule, f"checks[{i}]"):
             slots.append(ExpressionSlot(parent, key, expr, label, rule))
@@ -514,7 +514,7 @@ def collect_expression_slots(asm: Assembly) -> List[ExpressionSlot]:
     return slots
 
 
-def apply_expression_values(slots: List[ExpressionSlot], results: List[Dict[str, Any]]) -> None:
+def apply_expression_values(slots: list[ExpressionSlot], results: list[dict[str, Any]]) -> None:
     """Substitute evaluated values into the slots.
 
     ``results`` is what :func:`openscad_mcp.wrappers.collect_eval_results`
@@ -547,14 +547,14 @@ def apply_expression_values(slots: List[ExpressionSlot], results: List[Dict[str,
 def _is_numeric_value(value: Any) -> bool:
     if isinstance(value, bool):
         return False
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return True
     if isinstance(value, list):
         return all(_is_numeric_value(v) for v in value)
     return False
 
 
-def parse_assembly(data: Dict[str, Any], scad_file: Optional[str] = None) -> Assembly:
+def parse_assembly(data: dict[str, Any], scad_file: str | None = None) -> Assembly:
     """Build an Assembly from a parsed check file (dict)."""
     if not isinstance(data, dict):
         raise AssemblyError("check file must be a mapping")
@@ -582,7 +582,7 @@ def parse_assembly(data: Dict[str, Any], scad_file: Optional[str] = None) -> Ass
     return asm
 
 
-def load_check_file(text: str, scad_file: Optional[str] = None) -> Assembly:
+def load_check_file(text: str, scad_file: str | None = None) -> Assembly:
     """Parse YAML or JSON check-file text."""
     data: Any
     stripped = text.strip()
@@ -595,12 +595,12 @@ def load_check_file(text: str, scad_file: Optional[str] = None) -> Assembly:
     return parse_assembly(data, scad_file=scad_file)
 
 
-def pairs_for(assembly: Assembly, pairs: Any, include_ghosts: bool = True) -> List[tuple[str, str]]:
+def pairs_for(assembly: Assembly, pairs: Any, include_ghosts: bool = True) -> list[tuple[str, str]]:
     """Resolve a pairs argument ('all' | list | None) to name tuples."""
     names = assembly.names(include_ghosts=include_ghosts)
     if pairs in (None, "all"):
         return [(a, b) for i, a in enumerate(names) for b in names[i + 1 :]]
-    out: List[tuple[str, str]] = []
+    out: list[tuple[str, str]] = []
     for pair in pairs:
         a, b = str(pair[0]), str(pair[1])
         assembly.part(a)

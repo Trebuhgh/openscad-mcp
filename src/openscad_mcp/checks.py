@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any
 
 from . import geom
 from .assembly import Assembly, pairs_for
 
-Vec3 = Tuple[float, float, float]
+Vec3 = tuple[float, float, float]
 
 
 def _v3(seq: Any) -> Vec3:
@@ -38,12 +39,12 @@ def _v3(seq: Any) -> Vec3:
 
 @dataclass
 class Quality:
-    fn: Optional[int]
-    curved_radius_mm: Optional[float] = None  # largest curved feature radius among the parts
+    fn: int | None
+    curved_radius_mm: float | None = None  # largest curved feature radius among the parts
     # Evaluated CSG radii and segment counts, including local overrides and scaling.
-    curve_samples: Tuple[Tuple[float, int], ...] = ()
+    curve_samples: tuple[tuple[float, int], ...] = ()
 
-    def error_bound_mm(self) -> Optional[float]:
+    def error_bound_mm(self) -> float | None:
         if self.curve_samples:
             return max(geom.inscribed_polygon_error(r, n) for r, n in self.curve_samples)
         if self.curved_radius_mm is None:
@@ -51,8 +52,8 @@ class Quality:
         segs = geom.segments_for(self.curved_radius_mm, self.fn or 0)
         return geom.inscribed_polygon_error(self.curved_radius_mm, segs)
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "fn": self.fn,
             "curved_features": bool(self.curve_samples) or self.curved_radius_mm is not None,
         }
@@ -68,7 +69,7 @@ class Quality:
         return d
 
 
-def _round_vec(v: Optional[Sequence[float]], nd: int = 3) -> Optional[List[float]]:
+def _round_vec(v: Sequence[float] | None, nd: int = 3) -> list[float] | None:
     if v is None:
         return None
     return [round(float(x), nd) for x in v]
@@ -81,9 +82,9 @@ def relation_row(
     rel: geom.PairRelation,
     quality: Quality,
     why: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if not math.isfinite(rel.distance_mm):
-        magnitude: Dict[str, Any] = {"distance_mm": None}
+        magnitude: dict[str, Any] = {"distance_mm": None}
     else:
         magnitude = {"distance_mm": round(rel.distance_mm, 4)}
     if rel.penetration_mm is not None:
@@ -92,7 +93,7 @@ def relation_row(
         magnitude["contact_area_mm2"] = round(rel.contact_area_mm2, 3)
     if rel.intersection_volume_mm3 is not None:
         magnitude["intersection_volume_mm3"] = round(rel.intersection_volume_mm3, 4)
-    row: Dict[str, Any] = {
+    row: dict[str, Any] = {
         "rule": rule,
         "subject": [a, b],
         "state": rel.state,
@@ -120,7 +121,7 @@ def relation_row(
     return row
 
 
-def _unresolved(row: Dict[str, Any], bound: float) -> Dict[str, Any]:
+def _unresolved(row: dict[str, Any], bound: float) -> dict[str, Any]:
     row["status"] = "UNRESOLVED"
     fn = row["quality"].get("fn")
     fn_text = f"$fn={fn}" if fn is not None else "the model's own $fn/$fa/$fs"
@@ -143,12 +144,12 @@ class RuleEngine:
     def __init__(
         self,
         assembly: Assembly,
-        meshes: Dict[str, geom.Mesh],
+        meshes: dict[str, geom.Mesh],
         quality: Quality,
-        predicate_runner: Optional[Callable[[List[str]], List[Dict[str, Any]]]] = None,
-        feature_provider: Optional[Callable[[], Dict[str, Any]]] = None,
-        printability_provider: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None,
-        volume_cross_check: Optional[Callable[[str, str], Optional[float]]] = None,
+        predicate_runner: Callable[[list[str]], list[dict[str, Any]]] | None = None,
+        feature_provider: Callable[[], dict[str, Any]] | None = None,
+        printability_provider: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+        volume_cross_check: Callable[[str, str], float | None] | None = None,
     ):
         self.asm = assembly
         self.meshes = meshes
@@ -157,7 +158,7 @@ class RuleEngine:
         self.feature_provider = feature_provider
         self.printability_provider = printability_provider
         self.volume_cross_check = volume_cross_check
-        self._relations: Dict[Tuple[str, str], geom.PairRelation] = {}
+        self._relations: dict[tuple[str, str], geom.PairRelation] = {}
         self.pairs_evaluated = 0
         self.pairs_aabb_separated = 0
 
@@ -200,8 +201,8 @@ class RuleEngine:
 
     # -- rules ------------------------------------------------------------------
 
-    def run(self, rules: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
+    def run(self, rules: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
         for rule in rules if rules is not None else self.asm.checks:
             if rule.get("_unresolved"):
                 rows.append(
@@ -245,14 +246,14 @@ class RuleEngine:
                 )
         return rows
 
-    def _pairs(self, rule: Dict[str, Any], include_ghosts: bool = True) -> List[Tuple[str, str]]:
+    def _pairs(self, rule: dict[str, Any], include_ghosts: bool = True) -> list[tuple[str, str]]:
         return [
             (a, b)
             for a, b in pairs_for(self.asm, rule.get("pairs"), include_ghosts=include_ghosts)
             if a in self.meshes and b in self.meshes
         ]
 
-    def rule_interference(self, rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def rule_interference(self, rule: dict[str, Any]) -> list[dict[str, Any]]:
         tol = float(rule.get("tolerance_mm", 0.0))
         why = rule.get("why", "parts must not overlap")
         rows = []
@@ -267,7 +268,7 @@ class RuleEngine:
             rows.append(row)
         return rows
 
-    def rule_clearance(self, rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def rule_clearance(self, rule: dict[str, Any]) -> list[dict[str, Any]]:
         min_mm = float(rule.get("min_mm", rule.get("required_mm", 0.0)))
         why = rule.get("why", f"parts must keep >= {min_mm} mm apart")
         rows = []
@@ -285,7 +286,7 @@ class RuleEngine:
             rows.append(row)
         return rows
 
-    def rule_contact(self, rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def rule_contact(self, rule: dict[str, Any]) -> list[dict[str, Any]]:
         kind = rule.get("kind", "static")
         rows = []
         for a, b in self._pairs(rule):
@@ -325,7 +326,7 @@ class RuleEngine:
             bool(pa.motion) and bool(pb.motion) and pa.motion != pb.motion
         )
 
-    def rule_predicate(self, rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def rule_predicate(self, rule: dict[str, Any]) -> list[dict[str, Any]]:
         if self.predicate_runner is None:
             return [
                 {
@@ -352,7 +353,7 @@ class RuleEngine:
             }
         ]
 
-    def rule_probe(self, rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def rule_probe(self, rule: dict[str, Any]) -> list[dict[str, Any]]:
         point = _v3(rule["point"])
         expect = str(rule.get("expect", "SOLID")).upper()
         size = float(rule.get("size_mm", 0.0))
@@ -389,7 +390,7 @@ class RuleEngine:
             }
         ]
 
-    def rule_ray(self, rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def rule_ray(self, rule: dict[str, Any]) -> list[dict[str, Any]]:
         origin = _v3(rule["origin"])
         direction = _v3(rule["direction"])
         max_d = rule.get("max_distance_mm")
@@ -399,7 +400,7 @@ class RuleEngine:
         hits = geom.ray_cast_parts(ray_meshes, origin, direction, max_d)
         first = hits[0] if hits else None
         want = rule.get("first_hit")
-        row: Dict[str, Any] = {
+        row: dict[str, Any] = {
             "rule": "ray",
             "subject": [want] if want else [],
             "origin": list(origin),
@@ -427,7 +428,7 @@ class RuleEngine:
             row["status"] = "PASS" if (first is not None and first.part == want) else "FAIL"
         return [row]
 
-    def rule_sweep(self, rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def rule_sweep(self, rule: dict[str, Any]) -> list[dict[str, Any]]:
         moving = str(rule["moving"])
         part = self.asm.part(moving)
         motion = dict(part.motion or {})
@@ -480,7 +481,7 @@ class RuleEngine:
                 worst = st
         min_gap = min((st.get("min_gap_mm", math.inf) for st in steps_out), default=math.inf)
         first_contact = next((st for st in steps_out if st.get("contacts")), None)
-        row: Dict[str, Any] = {
+        row: dict[str, Any] = {
             "rule": "sweep",
             "subject": [moving],
             "motion": kind,
@@ -513,7 +514,7 @@ class RuleEngine:
         row["status"] = "PASS" if worst is None else "FAIL"
         return [row]
 
-    def rule_alignment(self, rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def rule_alignment(self, rule: dict[str, Any]) -> list[dict[str, Any]]:
         if self.feature_provider is None:
             return [
                 {
@@ -544,7 +545,7 @@ class RuleEngine:
             )
         # Orphans are informational: one row per part with a count, not one
         # row per hole, or a plate with sixteen tapped holes drowns the report.
-        by_part: Dict[str, List[Dict[str, Any]]] = {}
+        by_part: dict[str, list[dict[str, Any]]] = {}
         for orphan in result.get("orphans", []):
             by_part.setdefault(str(orphan.get("part")), []).append(orphan)
         for part_name, orphans in by_part.items():
@@ -575,7 +576,7 @@ class RuleEngine:
             )
         return rows
 
-    def rule_print(self, rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def rule_print(self, rule: dict[str, Any]) -> list[dict[str, Any]]:
         if self.printability_provider is None:
             return [
                 {
@@ -587,7 +588,7 @@ class RuleEngine:
             ]
         name = str(rule["part"])
         facts = self.printability_provider(name, rule)
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         max_over = rule.get("max_overhang_area_mm2")
         if max_over is not None:
             area = facts.get("overhang", {}).get("area_mm2", 0.0)
@@ -647,7 +648,7 @@ class RuleEngine:
 
     # -- mass ------------------------------------------------------------------
 
-    def _mass_props(self, name: str, material: Optional[str], density: Optional[float]):
+    def _mass_props(self, name: str, material: str | None, density: float | None):
         """Mass properties of one part, computed once per (part, density source).
 
         Returns ``(props, source, note)``. ``props`` is None when the part has
@@ -698,7 +699,7 @@ class RuleEngine:
         cache[key] = (props, source, note)
         return cache[key]
 
-    def rule_mass(self, rule: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def rule_mass(self, rule: dict[str, Any]) -> list[dict[str, Any]]:
         """Mass, centre of mass and inertia limits over one part, several, or all.
 
         Keys: ``part`` | ``parts`` (default: every part); ``max_g`` /
@@ -722,9 +723,9 @@ class RuleEngine:
         why = rule.get("why", "")
 
         entries = []
-        sources: Dict[str, str] = {}
-        notes: List[str] = []
-        unresolved: List[str] = []
+        sources: dict[str, str] = {}
+        notes: list[str] = []
+        unresolved: list[str] = []
         for name in names:
             props, source, note = self._mass_props(name, material, density)
             sources[name] = source
@@ -737,8 +738,8 @@ class RuleEngine:
                 unresolved.append(f"{name}: mesh is not watertight, mass integral unreliable")
             entries.append((name, props))
 
-        def row(check: str, magnitude: Dict[str, Any], status: str, at=None) -> Dict[str, Any]:
-            r: Dict[str, Any] = {
+        def row(check: str, magnitude: dict[str, Any], status: str, at=None) -> dict[str, Any]:
+            r: dict[str, Any] = {
                 "rule": "mass",
                 "subject": list(names),
                 "check": check,
@@ -764,11 +765,11 @@ class RuleEngine:
         composed = massprops.compose(entries)
         total = float(composed["total_mass_g"])
         com = _v3(composed["center_of_mass"])
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
 
         max_g, min_g = rule.get("max_g"), rule.get("min_g")
         if max_g is not None or min_g is not None:
-            mag: Dict[str, Any] = {"mass_g": round(total, 4)}
+            mag: dict[str, Any] = {"mass_g": round(total, 4)}
             ok = True
             if max_g is not None:
                 mag["max_g"] = float(max_g)
@@ -790,7 +791,7 @@ class RuleEngine:
                 along = sum(rel[i] * d[i] for i in range(3))
                 perp = [rel[i] - along * d[i] for i in range(3)]
                 offset = math.sqrt(sum(x * x for x in perp))
-                ref: Dict[str, Any] = {"axis": [list(p0), list(d)]}
+                ref: dict[str, Any] = {"axis": [list(p0), list(d)]}
             else:
                 p0 = _v3(point)
                 offset = math.dist(com, p0)
@@ -835,7 +836,7 @@ class RuleEngine:
         return rows
 
 
-def exit_code(rows: List[Dict[str, Any]]) -> int:
+def exit_code(rows: list[dict[str, Any]]) -> int:
     """0 all pass, 1 any FAIL, 2 unresolved only."""
     if any(r.get("status") == "FAIL" for r in rows):
         return 1
@@ -844,7 +845,7 @@ def exit_code(rows: List[Dict[str, Any]]) -> int:
     return 0
 
 
-def summarize(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+def summarize(rows: list[dict[str, Any]]) -> dict[str, int]:
     out = {"pass": 0, "fail": 0, "unresolved": 0}
     for r in rows:
         key = {"PASS": "pass", "FAIL": "fail"}.get(str(r.get("status")), "unresolved")

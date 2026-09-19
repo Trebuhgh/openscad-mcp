@@ -5,12 +5,11 @@ This module contains all Pydantic models, enums, and type definitions
 used throughout the application for validation and serialization.
 """
 
-from enum import Enum
-from typing import Any, List, Tuple
 import json
+from enum import Enum
+from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
-
+from pydantic import BaseModel, Field, model_validator
 
 # ============================================================================
 # Enums
@@ -85,18 +84,18 @@ class Vector3D(BaseModel):
                 raise ValueError(f"Cannot parse '{data}' as a valid Vector3D") from None
 
         # If it's a list or tuple with 3 elements
-        if isinstance(data, (list, tuple)) and len(data) == 3:
+        if isinstance(data, list | tuple) and len(data) == 3:
             return {"x": data[0], "y": data[1], "z": data[2]}
 
         # If none of the above, return as is and let Pydantic handle it
         return data
 
-    def to_tuple(self) -> Tuple[float, float, float]:
+    def to_tuple(self) -> tuple[float, float, float]:
         """Convert to tuple format."""
         return (self.x, self.y, self.z)
 
     @classmethod
-    def from_tuple(cls, values: Tuple[float, float, float]) -> "Vector3D":
+    def from_tuple(cls, values: tuple[float, float, float]) -> "Vector3D":
         """Create from tuple."""
         return cls(x=values[0], y=values[1], z=values[2])
 
@@ -140,36 +139,20 @@ class ImageSize(BaseModel):
                 raise ValueError(f"Cannot parse '{data}' as a valid ImageSize") from None
 
         # If it's a list or tuple with 2 elements
-        if isinstance(data, (list, tuple)) and len(data) == 2:
+        if isinstance(data, list | tuple) and len(data) == 2:
             return {"width": data[0], "height": data[1]}
 
         # If none of the above, return as is and let Pydantic handle it
         return data
 
-    def to_tuple(self) -> Tuple[int, int]:
+    def to_tuple(self) -> tuple[int, int]:
         """Convert to tuple format."""
         return (self.width, self.height)
 
     @classmethod
-    def from_tuple(cls, values: Tuple[int, int]) -> "ImageSize":
+    def from_tuple(cls, values: tuple[int, int]) -> "ImageSize":
         """Create from tuple."""
         return cls(width=values[0], height=values[1])
-
-    @field_validator("width", "height")
-    @classmethod
-    def validate_size(cls, v: int, info) -> int:
-        """Validate image dimensions."""
-        if v > 4096:
-            raise ValueError(f"{info.field_name} exceeds maximum of 4096 pixels")
-        return v
-
-    @model_validator(mode="after")
-    def validate_total_pixels(self) -> "ImageSize":
-        """Validate total pixel count."""
-        total_pixels = self.width * self.height
-        if total_pixels > 16777216:  # 4K limit
-            raise ValueError(f"Total pixels ({total_pixels}) exceeds 4K limit (16777216)")
-        return self
 
 
 # ============================================================================
@@ -183,7 +166,7 @@ class OpenSCADInfo(BaseModel):
     installed: bool = Field(..., description="Whether OpenSCAD is installed")
     version: str | None = Field(None, description="OpenSCAD version")
     path: str | None = Field(None, description="Path to OpenSCAD executable")
-    searched_paths: List[str] | None = Field(None, description="Paths that were searched")
+    searched_paths: list[str] | None = Field(None, description="Paths that were searched")
 
 
 class ServerInfo(BaseModel):
@@ -196,6 +179,6 @@ class ServerInfo(BaseModel):
     max_concurrent_renders: int = Field(..., description="Maximum concurrent renders")
     active_operations: int = Field(..., description="Currently active operations")
     cache_enabled: bool = Field(..., description="Whether caching is enabled")
-    supported_formats: List[str] = Field(
+    supported_formats: list[str] = Field(
         default_factory=lambda: ["png"], description="Supported output formats"
     )

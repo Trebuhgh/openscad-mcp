@@ -47,7 +47,7 @@ By participating in this project, you agree to abide by our Code of Conduct:
 
 ### Prerequisites
 
-- Python 3.10 or higher (CI tests 3.10 and 3.12)
+- Python 3.10 or higher (CI tests 3.10, 3.11 and 3.12)
 - [uv](https://docs.astral.sh/uv/) — the project's package manager, with a committed `uv.lock`
 - Git
 - OpenSCAD, for the tests and evals that use the real binary. Version 2021.01 is
@@ -100,7 +100,7 @@ uv run pytest -k "clearance" --no-cov
 
 # Markers that select something: unit, config, integration, slow, performance,
 # edge, render. --strict-markers is on, so a new marker has to be declared in
-# the root pytest.ini or in pytest_configure in tests/conftest.py.
+# pyproject.toml or in pytest_configure in tests/conftest.py.
 uv run pytest -m unit
 uv run pytest -m "not slow"
 
@@ -108,23 +108,17 @@ uv run pytest -m "not slow"
 uv run python evals/run.py reference
 
 # Lint, format, type check
-uv run ruff check src/ tests/
-uv run black --check src/ tests/
+uv run ruff check src/openscad_mcp/
+uv run ruff format --check src/openscad_mcp/
 uv run mypy src/
 ```
 
 ### About the lint output
 
-`ruff check src/ tests/` currently reports around 1,280 findings, `black --check`
-wants to reformat 18 files, and `mypy src/` reports 77 errors. This is
-pre-existing debt, not something your patch broke.
-
-CI gates on a narrower rule set: `ruff check --select F,E9,B src/openscad_mcp/`.
-Write new and modified code so it is clean under the full configuration, but do
-**not** reformat the tree wholesale inside a functional change. A 4,000-line
-whitespace diff buries the two lines that matter, and it is the single hardest
-kind of PR to review. If you want to pay down the debt, that is welcome as its
-own PR, one tool and one directory at a time.
+The complete Ruff configuration is enforced for `src/openscad_mcp/`. Tests are
+not yet part of that gate and mypy still reports pre-existing type errors. Keep
+new and modified code clean, and keep mechanical formatting separate from
+functional changes so reviews remain focused.
 
 There is no `.pre-commit-config.yaml` in the repo today, so `pre-commit install`
 does nothing useful. `pre-commit` is still in the dev extra; adding a config is a
@@ -239,7 +233,7 @@ before raising the cap.
   `tests/test_check.py` and `tests/test_parts_catalog.py` define a
   `needs_openscad = pytest.mark.skipif(...)` for exactly this; follow the
   pattern.
-- The coverage floor is 80% (`--cov-fail-under=80` in the root `pytest.ini`).
+- The coverage floor is 80% (`tool.pytest.ini_options` in `pyproject.toml`).
 
 ## Design Rules That Should Not Be Undone
 
@@ -411,7 +405,7 @@ OpenSCAD file, and the self-check that compares them.
 - Type hints on new functions. Mypy runs with `ignore_missing_imports` and
   `disallow_untyped_defs = false`, so annotations are encouraged rather than
   enforced.
-- Python 3.10 is the floor and CI tests 3.10 and 3.12, so 3.11-only and
+- Python 3.10 is the floor and CI tests 3.10, 3.11 and 3.12, so 3.11-only and
   3.12-only syntax is out.
 - Small, single-purpose functions, and names that say what the value is rather
   than what type it has.
