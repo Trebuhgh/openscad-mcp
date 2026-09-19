@@ -369,6 +369,7 @@ openscad-mcp/
 │   ├── mesh.py              # Stdlib STL/SVG analysis: welding, components, volumes
 │   ├── reference.py         # Sourced engineering data: fits, fasteners, inserts, DFM
 │   ├── types.py             # Pydantic models and enums
+│   ├── parameters.py        # Flexible MCP parameter normalization
 │   └── utils/config.py      # Configuration with env/YAML/dotenv support
 ├── tests/                   # ~1,500 tests; 80% coverage floor
 ├── evals/                   # Deterministic geometry eval harness, 15 tasks

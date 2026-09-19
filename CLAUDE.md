@@ -101,6 +101,7 @@ This file contains the FastMCP server instance, all MCP tools, helpers, and rend
 - **`reference.py`** — sourced fits/fasteners/inserts/bearings/joints/DFM/materials data, `conventions_brief()` (server instructions), `cheatsheet()`
 - **`diagnostics.py`** — `parse_openscad_output()` turns stderr into `Diagnostics` (records with file/line and folded TRACE call stacks, capped echo output, CGAL statistics, repair hints keyed to real 2021.01 message strings), `parse_deps_file()` for `-d` output, `extract_source_dependencies()` for static include/use/import/surface scanning
 - **`types.py`** — Pydantic v2 models and enums: `ColorScheme`, `TransportType`, `Vector3D`, `ImageSize`, `OpenSCADInfo`, `ServerInfo`
+- **`parameters.py`** — flexible normalization of list, mapping, camera, and image-size values from MCP clients; `server.py` re-exports the helpers for compatibility
 - **`utils/config.py`** — Configuration via Pydantic models with env var, `.env`, and YAML support. Singleton access via `get_config()`/`set_config()`. Configs: `RenderingConfig`, `CacheConfig`, `SecurityConfig`, `ServerConfig`, `Config`
 
 ### Security
