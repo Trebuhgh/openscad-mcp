@@ -50,6 +50,18 @@ from .parameters import (
     parse_image_size_param,
     parse_list_param,
 )
+from .responses import (
+    compress_base64_image as _compress_base64_image,
+)
+from .responses import (
+    estimate_response_size as _estimate_response_size,
+)
+from .responses import (
+    manage_response_size as _manage_response_size,
+)
+from .responses import (
+    save_image_to_file as _save_image_to_file,
+)
 from .utils.config import get_config, get_render_semaphore
 
 logger = logging.getLogger(__name__)
@@ -1096,99 +1108,23 @@ def render_scad_to_png(
 
 
 def estimate_response_size(data: Any) -> int:
-    """
-    Estimate the token size of response data.
-
-    Uses a rough approximation of 4 characters per token, which is a
-    conservative estimate for base64-encoded data and JSON structures.
-
-    Args:
-        data: Any JSON-serializable data structure
-
-    Returns:
-        Estimated size in tokens
-    """
-    json_str = json.dumps(data)
-    # Approximate: 4 characters per token (conservative for base64)
-    return len(json_str) // 4
+    """Compatibility wrapper for :func:`responses.estimate_response_size`."""
+    return _estimate_response_size(data)
 
 
 def save_image_to_file(base64_data: str, filename: str, output_dir: Path) -> str:
-    """
-    Save base64 image to file and return path.
-
-    Decodes base64 image data and saves it to a file in the specified directory.
-    Creates the directory if it doesn't exist.
-
-    Args:
-        base64_data: Base64-encoded image data
-        filename: Name for the saved file
-        output_dir: Directory to save the file in
-
-    Returns:
-        String path to the saved file
-
-    Raises:
-        ValueError: If base64 decoding fails
-        OSError: If file writing fails
-    """
-    try:
-        # Ensure output directory exists
-        output_dir.mkdir(parents=True, exist_ok=True)
-        file_path = output_dir / filename
-
-        # Decode and save
-        image_data = base64.b64decode(base64_data)
-        with open(file_path, "wb") as f:
-            f.write(image_data)
-
-        return str(file_path)
-    except Exception as e:
-        raise ValueError(f"Failed to save image to file: {e}") from e
+    """Compatibility wrapper for :func:`responses.save_image_to_file`."""
+    return _save_image_to_file(base64_data, filename, output_dir)
 
 
 def compress_base64_image(base64_data: str, quality: int = 85, optimize: bool = True) -> str:
-    """
-    Compress base64 image to reduce size.
-
-    Uses PIL/Pillow to decode, compress, and re-encode the image.
-    Maintains PNG format but applies compression and optimization.
-
-    Args:
-        base64_data: Base64-encoded PNG image
-        quality: Compression quality (1-100, ignored for PNG optimize)
-        optimize: Whether to apply PNG optimization
-
-    Returns:
-        Compressed base64-encoded image
-
-    Raises:
-        ValueError: If image processing fails
-    """
-    import io
-
-    try:
-        # Decode base64 to image
-        image_data = base64.b64decode(base64_data)
-        image = PILImage.open(io.BytesIO(image_data))
-
-        # Compress using PNG optimization
-        buffer = io.BytesIO()
-        # For PNG, quality parameter doesn't apply, but optimize does
-        # We use compress_level for finer control
-        save_kwargs = {
-            "format": "PNG",
-            "optimize": optimize,
-            "compress_level": 9 if quality < 50 else (6 if quality < 85 else 3),
-        }
-        image.save(buffer, **save_kwargs)
-
-        # Re-encode to base64
-        buffer.seek(0)
-        compressed_data = base64.b64encode(buffer.getvalue()).decode("utf-8")
-        return compressed_data
-    except Exception as e:
-        raise ValueError(f"Failed to compress image: {e}") from e
+    """Compatibility wrapper for :func:`responses.compress_base64_image`."""
+    return _compress_base64_image(
+        base64_data,
+        quality=quality,
+        optimize=optimize,
+        _image_module=PILImage,
+    )
 
 
 def manage_response_size(
@@ -1198,103 +1134,17 @@ def manage_response_size(
     output_dir: Path | None = None,
     ctx: Any | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
-    """
-    Manage response size for multiple images.
-
-    Intelligently handles large image responses by either compressing them,
-    saving to files, or keeping as base64 based on size constraints.
-
-    Args:
-        images: Dictionary of name->base64 or list of image dicts with base64 data
-        output_format: "auto" | "base64" | "file_path" | "compressed"
-        max_size: Maximum response size in tokens (approx 4 chars per token)
-        output_dir: Directory to save images when using file_path format
-        ctx: Optional context for logging
-
-    Returns:
-        Modified images dictionary or list with optimized responses
-    """
-    config = get_config()
-
-    # Set default output directory if not provided
-    if output_dir is None:
-        output_dir = Path(config.temp_dir) / "renders"
-
-    # Handle both dict and list inputs
-    is_dict = isinstance(images, dict)
-
-    if is_dict:
-        working_images = [(k, v) for k, v in images.items()]
-    else:
-        working_images = [(f"image_{i}", img.get("data", img)) for i, img in enumerate(images)]
-
-    # Determine output format if auto
-    if output_format == "auto":
-        # Estimate current size
-        current_size = estimate_response_size(images)
-
-        if ctx:
-            logger.info(f"Estimated response size: {current_size} tokens")
-
-        if current_size > max_size:
-            # Try compression first
-            for _name, data in working_images[:1]:  # Test with first image
-                try:
-                    compressed = compress_base64_image(data)
-                    compression_ratio = len(compressed) / len(data)
-                    # If we can achieve >30% reduction, use compression
-                    if compression_ratio < 0.7:
-                        output_format = "compressed"
-                        break
-                except Exception:
-                    pass
-
-            # If compression isn't enough, use file paths
-            if output_format == "auto":
-                output_format = "file_path"
-        else:
-            output_format = "base64"
-
-        if ctx:
-            logger.info(f"Selected output format: {output_format}")
-
-    # Process images based on format
-    result = {}
-
-    for name, base64_data in working_images:
-        if output_format == "file_path":
-            # Save to file and return path
-            filename = f"{name}_{uuid.uuid4().hex[:8]}.png"
-            file_path = save_image_to_file(base64_data, filename, output_dir)
-            result[name] = {"type": "file_path", "path": file_path, "mime_type": "image/png"}
-
-        elif output_format == "compressed":
-            # Compress and return base64
-            try:
-                compressed_data = compress_base64_image(base64_data)
-                result[name] = {
-                    "type": "base64_compressed",
-                    "data": compressed_data,
-                    "mime_type": "image/png",
-                    "compression_ratio": len(compressed_data) / len(base64_data),
-                }
-            except Exception as e:
-                # Fallback to original if compression fails
-                if ctx:
-                    logger.warning(f"Compression failed for {name}: {e}")
-                result[name] = {"type": "base64", "data": base64_data, "mime_type": "image/png"}
-
-        else:  # base64 format
-            result[name] = {"type": "base64", "data": base64_data, "mime_type": "image/png"}
-
-    # Return in original format
-    if is_dict:
-        # For backwards compatibility, if all are base64, return simple dict
-        if all(v["type"] == "base64" for v in result.values()):
-            return {k: v["data"] for k, v in result.items()}
-        return result
-    else:
-        return list(result.values())
+    """Compatibility wrapper for :func:`responses.manage_response_size`."""
+    return _manage_response_size(
+        images,
+        output_format=output_format,
+        max_size=max_size,
+        output_dir=output_dir,
+        ctx=ctx,
+        _estimate=estimate_response_size,
+        _save=save_image_to_file,
+        _compress=compress_base64_image,
+    )
 
 
 # View presets for common perspectives with distance=200

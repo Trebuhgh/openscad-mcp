@@ -370,6 +370,7 @@ openscad-mcp/
 │   ├── reference.py         # Sourced engineering data: fits, fasteners, inserts, DFM
 │   ├── types.py             # Pydantic models and enums
 │   ├── parameters.py        # Flexible MCP parameter normalization
+│   ├── responses.py         # Image response sizing, compression and file output
 │   └── utils/config.py      # Configuration with env/YAML/dotenv support
 ├── tests/                   # ~1,500 tests; 80% coverage floor
 ├── evals/                   # Deterministic geometry eval harness, 15 tasks
